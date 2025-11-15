@@ -1,0 +1,110 @@
+package controller
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"sync"
+
+	"clusterctl/internal/logging"
+)
+
+// clusterState is the on-disk representation of controller state.
+// It is intentionally minimal for now: we only persist node registrations
+// and derive counts from them on demand.
+type clusterState struct {
+	Nodes []NodeRegistration `json:"nodes"`
+}
+
+// fileStore is a simple JSON-backed state store stored under the configured
+// state directory. It is safe for concurrent use by multiple goroutines.
+type fileStore struct {
+	path  string
+	mu    sync.Mutex
+	state clusterState
+}
+
+func newFileStore(stateDir string) (*fileStore, error) {
+	if stateDir == "" {
+		return nil, errors.New("controller: state dir must be set")
+	}
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return nil, err
+	}
+
+	s := &fileStore{path: filepath.Join(stateDir, "state.json")}
+	if err := s.loadLocked(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *fileStore) loadLocked() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			s.state = clusterState{}
+			return nil
+		}
+		return err
+	}
+	if len(data) == 0 {
+		s.state = clusterState{}
+		return nil
+	}
+
+	if err := json.Unmarshal(data, &s.state); err != nil {
+		return err
+	}
+
+	logging.L().Infow("loaded controller state", "path", s.path, "nodes", len(s.state.Nodes))
+	return nil
+}
+
+// addRegistration upserts the given registration and persists the updated
+// state to disk. It returns the updated state snapshot.
+func (s *fileStore) addRegistration(reg NodeRegistration) (clusterState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	updated := false
+	for i := range s.state.Nodes {
+		n := &s.state.Nodes[i]
+		if n.Hostname == reg.Hostname && n.Role == reg.Role {
+			*n = reg
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		s.state.Nodes = append(s.state.Nodes, reg)
+	}
+
+	if err := s.saveLocked(); err != nil {
+		return clusterState{}, err
+	}
+	return s.state, nil
+}
+
+func (s *fileStore) saveLocked() error {
+	data, err := json.MarshalIndent(&s.state, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, s.path); err != nil {
+		return err
+	}
+
+	logging.L().Infow("persisted controller state", "path", s.path, "nodes", len(s.state.Nodes))
+	return nil
+}
+
