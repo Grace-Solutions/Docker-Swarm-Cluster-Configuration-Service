@@ -60,14 +60,16 @@ func usage() {
 Usage:
   clusterctl master init [flags]
   clusterctl master serve [flags]
+  clusterctl master reset [flags]
   clusterctl node join [flags]
+  clusterctl node reset [flags]
 
 `)
 }
 
 func runMaster(ctx context.Context, args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "missing master subcommand (init|serve)")
+		fmt.Fprintln(os.Stderr, "missing master subcommand (init|serve|reset)")
 		os.Exit(2)
 	}
 
@@ -79,6 +81,8 @@ func runMaster(ctx context.Context, args []string) {
 		masterInit(ctx, subArgs)
 	case "serve":
 		masterServe(ctx, subArgs)
+	case "reset":
+		masterReset(ctx, subArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown master subcommand %q\n", sub)
 		os.Exit(2)
@@ -131,9 +135,27 @@ func masterServe(ctx context.Context, args []string) {
 	}
 }
 
+func masterReset(ctx context.Context, args []string) {
+	fs := flag.NewFlagSet("master reset", flag.ExitOnError)
+	stateDir := fs.String("state-dir", defaultStateDir, "controller state directory")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+
+	opts := controller.MasterResetOptions{
+		StateDir: *stateDir,
+	}
+
+	if err := controller.MasterReset(ctx, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "master reset failed: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+
 func runNode(ctx context.Context, args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "missing node subcommand (join)")
+		fmt.Fprintln(os.Stderr, "missing node subcommand (join|reset)")
 		os.Exit(2)
 	}
 
@@ -143,6 +165,8 @@ func runNode(ctx context.Context, args []string) {
 	switch sub {
 	case "join":
 		nodeJoin(ctx, subArgs)
+	case "reset":
+		nodeReset(ctx, subArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown node subcommand %q\n", sub)
 		os.Exit(2)
@@ -177,4 +201,39 @@ func nodeJoin(ctx context.Context, args []string) {
 		os.Exit(1)
 	}
 }
+
+func nodeReset(ctx context.Context, args []string) {
+	fs := flag.NewFlagSet("node reset", flag.ExitOnError)
+	master := fs.String("master", "", "controller address (host:port), required when --deregister is set")
+	role := fs.String("role", "worker", "node role (manager|worker) for deregistration")
+	hostnameOverride := fs.String("hostname", "", "override detected hostname for deregistration")
+	overlayProvider := fs.String("overlay-provider", "none", "overlay provider (netbird|tailscale|wireguard|none)")
+	overlayConfig := fs.String("overlay-config", "", "overlay provider configuration file")
+	glusterMount := fs.String("gluster-mount", defaultStateDir, "GlusterFS mount point to unmount")
+	deregister := fs.Bool("deregister", false, "deregister this node from the controller")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+
+	if *deregister && *master == "" {
+		fmt.Fprintln(os.Stderr, "--master is required when --deregister is set")
+		os.Exit(2)
+	}
+
+	opts := nodeagent.ResetOptions{
+		MasterAddr:       *master,
+		Role:             *role,
+		HostnameOverride: *hostnameOverride,
+		OverlayProvider:  *overlayProvider,
+		OverlayConfig:    *overlayConfig,
+		GlusterMount:     *glusterMount,
+		Deregister:       *deregister,
+	}
+
+	if err := nodeagent.Reset(ctx, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "node reset failed: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 

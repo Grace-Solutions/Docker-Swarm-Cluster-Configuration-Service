@@ -87,10 +87,26 @@ func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts Serve
 	}
 
 	reg.Timestamp = time.Now().UTC()
+	action := reg.Action
+	if action == "" {
+		action = "register"
+	}
 
-	state, err := store.addRegistration(reg)
-	if err != nil {
-		return err
+	var (
+		state clusterState
+		aerr  error
+	)
+
+	switch action {
+	case "register":
+		state, aerr = store.addRegistration(reg)
+	case "deregister":
+		state, aerr = store.removeRegistration(reg.Hostname, reg.Role)
+	default:
+		return errors.New("controller: unknown action")
+	}
+	if aerr != nil {
+		return aerr
 	}
 
 	managers, workers := countRoles(state.Nodes)
@@ -100,7 +116,9 @@ func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts Serve
 		SwarmRole:        reg.Role,
 	}
 
-	if !opts.WaitForMinimum {
+	if action == "deregister" {
+		resp.Status = StatusReady
+	} else if !opts.WaitForMinimum {
 		resp.Status = StatusReady
 	} else if managers >= opts.MinManagers && workers >= opts.MinWorkers {
 		resp.Status = StatusReady
@@ -108,7 +126,7 @@ func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts Serve
 		resp.Status = StatusWaiting
 	}
 
-	if resp.Status == StatusReady && (reg.Role == "manager" || reg.Role == "worker") {
+	if action == "register" && resp.Status == StatusReady && (reg.Role == "manager" || reg.Role == "worker") {
 		if token, err := swarm.JoinToken(ctx, reg.Role); err != nil {
 			logging.L().Warnw("failed to fetch swarm join token", "role", reg.Role, "err", err)
 		} else {
@@ -121,6 +139,7 @@ func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts Serve
 		"hostname", reg.Hostname,
 		"role", reg.Role,
 		"ip", reg.IP,
+		"action", action,
 		"managers", managers,
 		"workers", workers,
 		"status", resp.Status,

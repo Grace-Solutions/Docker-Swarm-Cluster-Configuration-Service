@@ -90,6 +90,41 @@ func (s *fileStore) addRegistration(reg NodeRegistration) (clusterState, error) 
 	return s.state, nil
 }
 
+func (s *fileStore) removeRegistration(hostname, role string) (clusterState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	idx := -1
+	for i, n := range s.state.Nodes {
+		if n.Hostname == hostname && n.Role == role {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		// Nothing to remove; treat as converged.
+		return s.state, nil
+	}
+
+	s.state.Nodes = append(s.state.Nodes[:idx], s.state.Nodes[idx+1:]...)
+
+	if err := s.saveLocked(); err != nil {
+		return clusterState{}, err
+	}
+	return s.state, nil
+}
+
+func (s *fileStore) reset() (clusterState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.state = clusterState{}
+	if err := s.saveLocked(); err != nil {
+		return clusterState{}, err
+	}
+	return s.state, nil
+}
+
 func (s *fileStore) saveLocked() error {
 	data, err := json.MarshalIndent(&s.state, "", "  ")
 	if err != nil {

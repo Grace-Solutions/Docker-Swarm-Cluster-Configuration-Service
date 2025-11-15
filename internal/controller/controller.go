@@ -23,6 +23,10 @@ type MasterInitOptions struct {
 	EnableGluster bool
 }
 
+type MasterResetOptions struct {
+	StateDir string
+}
+
 type NodeRegistration struct {
 	Hostname       string    `json:"hostname"`
 	Role           string    `json:"role"`
@@ -33,6 +37,10 @@ type NodeRegistration struct {
 	DockerVersion  string    `json:"dockerVersion"`
 	GlusterCapable bool      `json:"glusterCapable"`
 	Timestamp      time.Time `json:"timestamp"`
+	// Action controls how the controller treats this registration. If empty or
+	// "register", the node is upserted into state. If "deregister", the node
+	// is removed from state.
+	Action string `json:"action,omitempty"`
 }
 
 type NodeResponseStatus string
@@ -79,3 +87,25 @@ func MasterInit(ctx context.Context, opts MasterInitOptions) error {
 	return nil
 }
 
+// MasterReset clears the controller's persisted state. It is safe to run
+// multiple times; after reset the controller behaves as if no nodes have
+// registered yet.
+func MasterReset(ctx context.Context, opts MasterResetOptions) error {
+	_ = ctx // reserved for potential future orchestration work
+
+	if opts.StateDir == "" {
+		return errors.New("controller: state dir must be set")
+	}
+
+	store, err := newFileStore(opts.StateDir)
+	if err != nil {
+		return err
+	}
+
+	if _, err := store.reset(); err != nil {
+		return err
+	}
+
+	logging.L().Infow("master reset complete", "stateDir", opts.StateDir)
+	return nil
+}

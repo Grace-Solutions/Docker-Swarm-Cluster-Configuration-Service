@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"clusterctl/internal/controller"
+	"clusterctl/internal/gluster"
 	"clusterctl/internal/ipdetect"
 	"clusterctl/internal/logging"
 	"clusterctl/internal/overlay"
@@ -28,6 +29,17 @@ type JoinOptions struct {
 	OverlayConfig    string
 	EnableGluster    bool
 }
+
+type ResetOptions struct {
+	MasterAddr       string
+	Role             string
+	HostnameOverride string
+	OverlayProvider  string
+	OverlayConfig    string
+	GlusterMount     string
+	Deregister       bool
+}
+
 
 // Join implements the node-side behaviour for `clusterctl node join`.
 //
@@ -111,12 +123,80 @@ func Join(ctx context.Context, opts JoinOptions) error {
 		return err
 	}
 
-	// TODO: GlusterFS convergence will be added once the gluster package is
-	// implemented. It must also be idempotent so repeated joins converge
-	// cleanly.
+	if lastResp.GlusterEnabled {
+		if err := gluster.Ensure(ctx, lastResp.GlusterVolume, lastResp.GlusterMount, lastResp.GlusterBrick); err != nil {
+			log.Warnw("gluster convergence failed", "err", err)
+			return err
+		}
+	}
+
 	log.Infow("node join completed")
 	return nil
 }
+
+// Reset implements the node-side behaviour for `clusterctl node reset`.
+//
+// It attempts to tear down overlay connectivity, Gluster mounts, and Swarm
+// membership, and optionally deregisters the node from the controller.
+func Reset(ctx context.Context, opts ResetOptions) error {
+	log := logging.L().With(
+		"component", "nodeagent",
+		"master", opts.MasterAddr,
+		"role", opts.Role,
+	)
+	log.Infow("starting node reset")
+
+	if err := overlay.Teardown(ctx, opts.OverlayProvider, opts.OverlayConfig); err != nil {
+		log.Warnw("overlay teardown failed", "err", err)
+		return err
+	}
+
+	if err := gluster.Teardown(ctx, opts.GlusterMount); err != nil {
+		log.Warnw("gluster teardown failed", "err", err)
+		return err
+	}
+
+	if err := swarm.Leave(ctx, true); err != nil {
+		log.Warnw("swarm leave failed", "err", err)
+		return err
+	}
+
+	if opts.Deregister {
+		if opts.MasterAddr == "" {
+			return errors.New("master address is required when deregistering")
+		}
+
+		hostname := opts.HostnameOverride
+		if hostname == "" {
+			var err error
+			hostname, err = os.Hostname()
+			if err != nil {
+				return err
+			}
+		}
+
+		role := opts.Role
+		if role == "" {
+			role = "worker"
+		}
+
+		reg := controller.NodeRegistration{
+			Hostname: hostname,
+			Role:     role,
+			OS:       runtime.GOOS,
+			Action:   "deregister",
+		}
+
+		if _, err := registerOnce(ctx, opts.MasterAddr, reg); err != nil {
+			log.Warnw("deregistration failed", "err", err)
+			return err
+		}
+	}
+
+	log.Infow("node reset completed")
+	return nil
+}
+
 
 func validateJoinOptions(opts JoinOptions) error {
 	if opts.MasterAddr == "" {
