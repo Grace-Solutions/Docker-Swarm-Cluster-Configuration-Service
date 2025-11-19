@@ -64,19 +64,30 @@ Example:
 
 ## Usage notes
 
-1. Make the scripts executable on Linux after checkout:
+1. On a fresh Linux host, you can clone the repo, make everything
+   executable, and enter the `binaries/` directory in one shot:
 
    ```bash
-   chmod +x cluster-master-init.sh cluster-master-serve.sh cluster-node-join.sh
-   chmod +x clusterctl-linux-amd64 clusterctl-linux-arm64
+   git clone https://github.com/Grace-Solutions/Docker-Swarm-Cluster-Configuration-Service.git && \
+     cd ./Docker-Swarm-Cluster-Configuration-Service && \
+     chmod -R -v +x ./ && \
+     cd ./binaries && \
+     clear
    ```
 
-2. Overlay providers like Netbird and Tailscale accept configuration via
+2. From there, run the wrapper scripts as usual. For example, to initialise
+   the master with GlusterFS enabled:
+
+   ```bash
+   ./cluster-master-init.sh --state-dir /data/GlusterFS/0001/orchestration --enable-glusterfs
+   ```
+
+4. Overlay providers like Netbird and Tailscale accept configuration via
    environment variables, e.g. `NB_SETUP_KEY` and `TS_AUTHKEY`. The Go
    implementation already maps `--overlay-config` into these env vars for the
    underlying CLI.
 
-3. The scripts themselves are thin wrappers; **all logic lives in the Go
+5. The scripts themselves are thin wrappers; **all logic lives in the Go
    binary**. For advanced scenarios (e.g. Swarm reset, node deregistration),
    invoke `clusterctl` directly:
 

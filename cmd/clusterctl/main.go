@@ -9,8 +9,10 @@ import (
 	"syscall"
 
 	"clusterctl/internal/controller"
+	"clusterctl/internal/deps"
 	"clusterctl/internal/logging"
 	"clusterctl/internal/nodeagent"
+	"clusterctl/internal/swarm"
 )
 
 const (
@@ -93,6 +95,12 @@ func masterInit(ctx context.Context, args []string) {
 	fs := flag.NewFlagSet("master init", flag.ExitOnError)
 	stateDir := fs.String("state-dir", defaultStateDir, "controller state directory")
 	enableGluster := fs.Bool("enable-glusterfs", false, "prepare GlusterFS brick and paths")
+	primary := fs.Bool("primary-master", false, "bootstrap this node as the initial Swarm manager and start the controller")
+	listen := fs.String("listen", defaultListenAddr, "controller listen address when --primary-master is set")
+	advertise := fs.String("advertise-addr", "", "swarm advertise address for this master (and controller advertise-addr)")
+	minManagers := fs.Int("min-managers", 0, "minimum managers before ready when --primary-master is set")
+	minWorkers := fs.Int("min-workers", 0, "minimum workers before ready when --primary-master is set")
+	waitForMinimum := fs.Bool("wait-for-minimum", false, "gate responses until minimum nodes reached when --primary-master is set")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
@@ -104,6 +112,34 @@ func masterInit(ctx context.Context, args []string) {
 
 	if err := controller.MasterInit(ctx, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "master init failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !*primary {
+		return
+	}
+
+	if err := deps.EnsureDockerWithCompose(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "master init (primary-master) docker installation failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := swarm.Init(ctx, *advertise); err != nil {
+		fmt.Fprintf(os.Stderr, "master init (primary-master) swarm init failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	serveOpts := controller.ServeOptions{
+		ListenAddr:     *listen,
+		StateDir:       *stateDir,
+		AdvertiseAddr:  *advertise,
+		MinManagers:    *minManagers,
+		MinWorkers:     *minWorkers,
+		WaitForMinimum: *waitForMinimum,
+	}
+
+	if err := controller.Serve(ctx, serveOpts); err != nil {
+		fmt.Fprintf(os.Stderr, "master serve failed: %v\n", err)
 		os.Exit(1)
 	}
 }

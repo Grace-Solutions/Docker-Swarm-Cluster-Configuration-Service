@@ -37,6 +37,68 @@ Key internal packages:
 - `internal/ipdetect` – IP auto-detection with CGNAT and RFC1918 preference.
 - `internal/logging` – structured logging using zap.
 
+## Quickstart (primary master on Linux)
+
+A typical first step is to bring up a **primary master** that both initialises
+the controller state and starts serving join requests. On a fresh Linux host:
+
+```bash
+git clone https://github.com/Grace-Solutions/Docker-Swarm-Cluster-Configuration-Service.git && \
+  cd ./Docker-Swarm-Cluster-Configuration-Service && \
+  chmod -R -v +x ./ && \
+  cd ./binaries && \
+  clear && \
+  ./cluster-master-init.sh \
+    --primary-master \
+    --listen 0.0.0.0:7000 \
+    --advertise-addr <PRIMARY_MANAGER_IP>:2377 \
+    --min-managers 1 \
+    --min-workers 0 \
+    --wait-for-minimum
+```
+
+Replace `<PRIMARY_MANAGER_IP>` with the address you want Swarm to use for this
+manager (typically your overlay IP).
+
+### Quickstart: additional manager node (Linux)
+
+On another Linux host that should participate as a Swarm **manager**:
+
+```bash
+git clone https://github.com/Grace-Solutions/Docker-Swarm-Cluster-Configuration-Service.git && \
+  cd ./Docker-Swarm-Cluster-Configuration-Service && \
+  chmod -R -v +x ./ && \
+  cd ./binaries && \
+  clear && \
+  ./cluster-node-join.sh \
+    --master <PRIMARY_MANAGER_IP>:7000 \
+    --role manager \
+    --overlay-provider netbird \
+    --overlay-config <NETBIRD_SETUP_KEY> \
+    --enable-glusterfs
+```
+
+### Quickstart: worker node (Linux)
+
+On a Linux host that should run Swarm **worker** tasks:
+
+```bash
+git clone https://github.com/Grace-Solutions/Docker-Swarm-Cluster-Configuration-Service.git && \
+  cd ./Docker-Swarm-Cluster-Configuration-Service && \
+  chmod -R -v +x ./ && \
+  cd ./binaries && \
+  clear && \
+  ./cluster-node-join.sh \
+    --master <PRIMARY_MANAGER_IP>:7000 \
+    --role worker \
+    --overlay-provider netbird \
+    --overlay-config <NETBIRD_SETUP_KEY> \
+    --enable-glusterfs
+```
+
+Replace `<NETBIRD_SETUP_KEY>` with your Netbird setup key (or switch
+`--overlay-provider` / `--overlay-config` to match your chosen overlay).
+
 ## CLI overview
 
 Main commands:
