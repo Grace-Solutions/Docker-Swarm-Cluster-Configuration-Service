@@ -1,3 +1,6 @@
+#Repository Clone command
+`git clone https://github.com/Grace-Solutions/Docker-Swarm-Cluster-Configuration-Service.git && cd ./Docker-Swarm-Cluster-Configuration-Service && chmod -R -v +x ./
+
 # Linux wrapper scripts for clusterctl
 
 This directory contains pre-built `clusterctl` binaries and convenience
