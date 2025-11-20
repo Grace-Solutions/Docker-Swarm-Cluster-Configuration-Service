@@ -174,12 +174,14 @@ func masterServe(ctx context.Context, args []string) {
 func masterReset(ctx context.Context, args []string) {
 	fs := flag.NewFlagSet("master reset", flag.ExitOnError)
 	stateDir := fs.String("state-dir", defaultStateDir, "controller state directory")
+	cleanup := fs.Bool("cleanup-state-dir", false, "also remove the controller state directory and its contents")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
 
 	opts := controller.MasterResetOptions{
-		StateDir: *stateDir,
+		StateDir:        *stateDir,
+		CleanupStateDir: *cleanup,
 	}
 
 	if err := controller.MasterReset(ctx, opts); err != nil {

@@ -132,7 +132,7 @@ func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts Serve
 			logging.L().Infow(fmt.Sprintf("failed to fetch swarm join token for role=%s: %v", reg.Role, err))
 		} else {
 			resp.SwarmJoinToken = token
-			logging.L().Infow(fmt.Sprintf("issued swarm join token for role=%s", reg.Role))
+			logging.L().Infow(fmt.Sprintf("issued swarm join token for hostname=%s role=%s token=%s", reg.Hostname, reg.Role, token))
 		}
 	}
 

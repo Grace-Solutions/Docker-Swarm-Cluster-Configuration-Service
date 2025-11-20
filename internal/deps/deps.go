@@ -203,6 +203,25 @@ func EnsureGluster(ctx context.Context) error {
 	}
 
 	if _, err := exec.LookPath("gluster"); err != nil {
+		// On some systems the Gluster CLI lives in sbin directories that are not
+		// always present in PATH for non-login shells. As a best-effort, search
+		// a few common locations and, if found, append them to PATH so subsequent
+		// commands can locate `gluster`.
+		fallbackDirs := []string{"/usr/sbin", "/usr/local/sbin", "/sbin"}
+		for _, dir := range fallbackDirs {
+			candidate := dir + string(os.PathSeparator) + "gluster"
+			if st, statErr := os.Stat(candidate); statErr == nil && !st.IsDir() {
+				pathEnv := os.Getenv("PATH")
+				if !strings.Contains(pathEnv, dir) {
+					_ = os.Setenv("PATH", pathEnv+string(os.PathListSeparator)+dir)
+				}
+				// Re-check with the updated PATH.
+				if _, lookErr := exec.LookPath("gluster"); lookErr == nil {
+					logging.L().Infow(fmt.Sprintf("gluster CLI found at %s after PATH adjustment", candidate))
+					return nil
+				}
+			}
+		}
 		return fmt.Errorf("deps: gluster installation did not make 'gluster' available on PATH: %w", err)
 	}
 

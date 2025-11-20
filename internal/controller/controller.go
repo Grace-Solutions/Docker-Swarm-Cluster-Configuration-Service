@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -25,7 +26,8 @@ type MasterInitOptions struct {
 }
 
 type MasterResetOptions struct {
-	StateDir string
+	StateDir        string
+	CleanupStateDir bool
 }
 
 type NodeRegistration struct {
@@ -100,12 +102,22 @@ func MasterInit(ctx context.Context, opts MasterInitOptions) error {
 
 // MasterReset clears the controller's persisted state. It is safe to run
 // multiple times; after reset the controller behaves as if no nodes have
-// registered yet.
+// registered yet. When CleanupStateDir is true, the entire state directory
+// (including the on-disk state file) is removed so a fresh cluster can be
+// bootstrapped.
 func MasterReset(ctx context.Context, opts MasterResetOptions) error {
 	_ = ctx // reserved for potential future orchestration work
 
 	if opts.StateDir == "" {
 		return errors.New("controller: state dir must be set")
+	}
+
+	if opts.CleanupStateDir {
+		if err := os.RemoveAll(opts.StateDir); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		logging.L().Infow(fmt.Sprintf("master reset complete; state dir removed: %s", opts.StateDir))
+		return nil
 	}
 
 	store, err := newFileStore(opts.StateDir)
