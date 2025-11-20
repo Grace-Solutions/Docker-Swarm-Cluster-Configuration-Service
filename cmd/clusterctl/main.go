@@ -129,6 +129,11 @@ func masterInit(ctx context.Context, args []string) {
 		os.Exit(1)
 	}
 
+	if err := swarm.EnsureDefaultNetworks(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "master init (primary-master) network setup failed: %v\n", err)
+		os.Exit(1)
+	}
+
 	serveOpts := controller.ServeOptions{
 		ListenAddr:     *listen,
 		StateDir:       *stateDir,

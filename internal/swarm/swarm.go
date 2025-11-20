@@ -160,3 +160,78 @@ func Leave(ctx context.Context, force bool) error {
 	return nil
 }
 
+// NetworkSpec describes the desired shape of a Swarm overlay network.
+type NetworkSpec struct {
+	Name    string
+	Subnet  string
+	Gateway string
+}
+
+const (
+	DefaultInternalNetworkName = "DOCKER-SWARM-INTERNAL"
+	DefaultExternalNetworkName = "DOCKER-SWARM-EXTERNAL"
+)
+
+// EnsureOverlayNetwork ensures an attachable overlay network with the given
+// IPAM configuration exists. If the network already exists it is left as-is.
+func EnsureOverlayNetwork(ctx context.Context, spec NetworkSpec) error {
+	if spec.Name == "" {
+		return errors.New("swarm: network name is required")
+	}
+
+	if err := deps.EnsureDockerWithCompose(ctx); err != nil {
+		return err
+	}
+
+	// Fast-path: if the network exists, leave it alone.
+	cmd := exec.CommandContext(ctx, "docker", "network", "inspect", spec.Name, "--format", "{{.Name}}")
+	out, err := cmd.Output()
+	if err == nil && strings.TrimSpace(string(out)) == spec.Name {
+		logging.L().Infow("swarm overlay network already present", "name", spec.Name)
+		return nil
+	}
+
+	args := []string{"network", "create", "--driver", "overlay", "--attachable"}
+	if spec.Subnet != "" {
+		args = append(args, "--subnet", spec.Subnet)
+	}
+	if spec.Gateway != "" {
+		args = append(args, "--gateway", spec.Gateway)
+	}
+	args = append(args, spec.Name)
+
+	cmd = exec.CommandContext(ctx, "docker", args...)
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("swarm: network create %s failed: %w (output: %s)", spec.Name, err, strings.TrimSpace(string(out)))
+	}
+
+	logging.L().Infow("swarm overlay network ensured", "name", spec.Name, "subnet", spec.Subnet, "gateway", spec.Gateway)
+	return nil
+}
+
+// EnsureDefaultNetworks ensures the default internal and external overlay
+// networks exist on the primary manager. It is safe to call multiple times.
+func EnsureDefaultNetworks(ctx context.Context) error {
+	internal := NetworkSpec{
+		Name:   DefaultInternalNetworkName,
+		Subnet: "10.128.0.0/16",
+		Gateway: "10.128.0.1",
+	}
+	if err := EnsureOverlayNetwork(ctx, internal); err != nil {
+		return err
+	}
+
+	external := NetworkSpec{
+		Name:   DefaultExternalNetworkName,
+		Subnet: "10.129.0.0/16",
+		Gateway: "10.129.0.1",
+	}
+	if err := EnsureOverlayNetwork(ctx, external); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+
