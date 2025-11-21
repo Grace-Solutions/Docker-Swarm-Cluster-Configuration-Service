@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -82,7 +83,25 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts ServeOptions) error {
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 
-	dec := json.NewDecoder(conn)
+	// Wrap the connection in a buffered reader so we can safely peek at the first
+	// byte. This lets us detect non-JSON/TLS-like connections (for example,
+	// health checks or processes speaking TLS to this plain-text port) and avoid
+	// noisy JSON parse errors.
+	br := bufio.NewReader(conn)
+	b, err := br.Peek(1)
+	if err != nil {
+		return err
+	}
+
+	// 0x16 is the first byte of a TLS ClientHello in all common TLS versions.
+	// If we see this, it is almost certainly a TLS client speaking to our
+	// plain-text JSON protocol. Log once per connection and ignore it.
+	if len(b) == 1 && b[0] == 0x16 {
+		logging.L().Infow(fmt.Sprintf("ignoring non-JSON/TLS-like connection from %s", conn.RemoteAddr().String()))
+		return nil
+	}
+
+	dec := json.NewDecoder(br)
 	var reg NodeRegistration
 	if err := dec.Decode(&reg); err != nil {
 		return err
