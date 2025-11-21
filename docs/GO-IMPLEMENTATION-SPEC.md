@@ -82,11 +82,11 @@ Common flags:
 - `--enable-glusterfs` / `--disable-glusterfs`
 
 Master-only:
-- `--state-dir /mnt/GlusterFS/0001/data`
+- `--state-dir /mnt/GlusterFS/Docker/Swarm/0001/data` (default)
 - `--advertise-addr <ip or hostname:port>`
-- `--listen 0.0.0.0:7000`
-- `--min-managers N`
-- `--min-workers N`
+- `--listen 0.0.0.0:7000` (default)
+- `--min-managers N` (default: 3)
+- `--min-workers N` (default: 6)
 - `--wait-for-minimum` (bool, default: false)
 
 Node-only:
