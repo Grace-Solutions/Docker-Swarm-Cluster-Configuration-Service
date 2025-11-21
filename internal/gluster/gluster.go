@@ -13,6 +13,51 @@ import (
 	"clusterctl/internal/logging"
 )
 
+// Global retry configuration for GlusterFS operations.
+const (
+	glusterMaxRetries     = 10
+	glusterInitialBackoff = 2 * time.Second
+	glusterMaxBackoff     = 30 * time.Second
+)
+
+// retryWithBackoff executes a function with exponential backoff retry logic.
+// It's used for GlusterFS operations that may need time to converge.
+func retryWithBackoff(ctx context.Context, operation string, fn func() error) error {
+	backoff := glusterInitialBackoff
+
+	for attempt := 1; attempt <= glusterMaxRetries; attempt++ {
+		err := fn()
+		if err == nil {
+			if attempt > 1 {
+				logging.L().Infow(fmt.Sprintf("gluster operation succeeded: operation=%s attempt=%d", operation, attempt))
+			}
+			return nil
+		}
+
+		if attempt < glusterMaxRetries {
+			logging.L().Infow(fmt.Sprintf("gluster operation failed, retrying: operation=%s attempt=%d/%d backoff=%v err=%v",
+				operation, attempt, glusterMaxRetries, backoff, err))
+
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+
+			// Exponential backoff with cap.
+			backoff *= 2
+			if backoff > glusterMaxBackoff {
+				backoff = glusterMaxBackoff
+			}
+			continue
+		}
+
+		return fmt.Errorf("gluster: %s failed after %d attempts: %w", operation, attempt, err)
+	}
+
+	return fmt.Errorf("gluster: %s failed: max retries exceeded", operation)
+}
+
 // Ensure converges the local GlusterFS state for this node based on the
 // controller's instructions. It is designed to be idempotent: repeated calls
 // with the same parameters should converge cleanly.
@@ -129,6 +174,7 @@ func ensureMount(ctx context.Context, volume, mountPoint string) error {
 
 func ensureMountFrom(ctx context.Context, hostname, volume, mountPoint string) error {
 	if isMounted(mountPoint) {
+		logging.L().Infow(fmt.Sprintf("gluster already mounted: mount=%s", mountPoint))
 		return nil
 	}
 
@@ -137,13 +183,26 @@ func ensureMountFrom(ctx context.Context, hostname, volume, mountPoint string) e
 	}
 
 	source := fmt.Sprintf("%s:%s", hostname, volume)
-	cmd := exec.CommandContext(ctx, "mount", "-t", "glusterfs", source, mountPoint)
-	out, err := cmd.CombinedOutput()
+
+	// Use retry logic for mounting as it may fail if the volume is still initializing.
+	err := retryWithBackoff(ctx, fmt.Sprintf("mount %s", source), func() error {
+		if isMounted(mountPoint) {
+			return nil
+		}
+
+		cmd := exec.CommandContext(ctx, "mount", "-t", "glusterfs", source, mountPoint)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("mount failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	})
+
 	if err != nil {
-		return fmt.Errorf("gluster: mount failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("gluster: %w", err)
 	}
 
-	logging.L().Infow("gluster mount ensured", "source", source, "mount", mountPoint)
+	logging.L().Infow(fmt.Sprintf("gluster mount ensured: source=%s mount=%s", source, mountPoint))
 	return nil
 }
 
@@ -361,6 +420,8 @@ func CreateReplicaVolume(ctx context.Context, name string, brickPaths []string) 
 // WaitForVolumeReady polls until the volume is started or the timeout expires.
 func WaitForVolumeReady(ctx context.Context, name string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	checkInterval := 2 * time.Second
+
 	for {
 		if time.Now().After(deadline) {
 			return fmt.Errorf("gluster: volume %s did not become ready within %v", name, timeout)
@@ -371,15 +432,18 @@ func WaitForVolumeReady(ctx context.Context, name string, timeout time.Duration)
 		if err == nil {
 			outStr := strings.TrimSpace(string(out))
 			if strings.Contains(outStr, "Status: Started") {
-				logging.L().Infow("gluster volume is ready", "name", name)
+				logging.L().Infow(fmt.Sprintf("gluster volume is ready: name=%s", name))
 				return nil
 			}
+			logging.L().Infow(fmt.Sprintf("gluster volume not yet started: name=%s", name))
+		} else {
+			logging.L().Infow(fmt.Sprintf("gluster volume info check failed: name=%s err=%v", name, err))
 		}
 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(2 * time.Second):
+		case <-time.After(checkInterval):
 		}
 	}
 }
@@ -476,6 +540,91 @@ func RemoveFromFstab(mountPoint string) error {
 	return nil
 }
 
+// PrintClusterStatus logs comprehensive GlusterFS cluster status information.
+func PrintClusterStatus(ctx context.Context, volume, mountPoint string) {
+	logging.L().Infow("========== GlusterFS Cluster Status ==========")
+
+	// Peer status.
+	cmd := exec.CommandContext(ctx, "gluster", "peer", "status")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		logging.L().Warnw(fmt.Sprintf("gluster peer status failed: %v", err))
+	} else {
+		outStr := strings.TrimSpace(string(out))
+		lines := strings.Split(outStr, "\n")
+		peerCount := 0
+		for _, line := range lines {
+			if strings.Contains(line, "Number of Peers:") {
+				logging.L().Infow(fmt.Sprintf("gluster cluster: %s", line))
+			} else if strings.Contains(line, "Hostname:") || strings.Contains(line, "State:") || strings.Contains(line, "Uuid:") {
+				logging.L().Infow(fmt.Sprintf("  %s", strings.TrimSpace(line)))
+				if strings.Contains(line, "Hostname:") {
+					peerCount++
+				}
+			}
+		}
+		if peerCount == 0 {
+			logging.L().Infow("gluster cluster: no peers (single-node or self only)")
+		}
+	}
+
+	// Volume info.
+	if volume != "" {
+		cmd = exec.CommandContext(ctx, "gluster", "volume", "info", volume)
+		out, err = cmd.CombinedOutput()
+		if err != nil {
+			logging.L().Warnw(fmt.Sprintf("gluster volume info failed: %v", err))
+		} else {
+			outStr := strings.TrimSpace(string(out))
+			lines := strings.Split(outStr, "\n")
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if trimmed != "" {
+					logging.L().Infow(fmt.Sprintf("  %s", trimmed))
+				}
+			}
+		}
+
+		// Volume status.
+		cmd = exec.CommandContext(ctx, "gluster", "volume", "status", volume)
+		out, err = cmd.CombinedOutput()
+		if err != nil {
+			logging.L().Warnw(fmt.Sprintf("gluster volume status failed: %v", err))
+		} else {
+			outStr := strings.TrimSpace(string(out))
+			lines := strings.Split(outStr, "\n")
+			logging.L().Infow(fmt.Sprintf("gluster volume status for %s:", volume))
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if trimmed != "" {
+					logging.L().Infow(fmt.Sprintf("  %s", trimmed))
+				}
+			}
+		}
+	}
+
+	// Mount status.
+	if mountPoint != "" {
+		mounted := isMounted(mountPoint)
+		logging.L().Infow(fmt.Sprintf("gluster mount status: path=%s mounted=%t", mountPoint, mounted))
+
+		// Show mount details from /proc/mounts.
+		f, err := os.Open("/proc/mounts")
+		if err == nil {
+			defer f.Close()
+			s := bufio.NewScanner(f)
+			for s.Scan() {
+				fields := strings.Fields(s.Text())
+				if len(fields) >= 4 && fields[1] == mountPoint {
+					logging.L().Infow(fmt.Sprintf("  mount: source=%s type=%s options=%s", fields[0], fields[2], fields[3]))
+				}
+			}
+		}
+	}
+
+	logging.L().Infow("========== End GlusterFS Cluster Status ==========")
+}
+
 // Orchestrate performs the full multi-node GlusterFS setup as the orchestrator worker.
 // It peers all workers, creates the replica volume, waits for readiness, mounts locally, and adds to fstab.
 // workerHostnames should include ALL GlusterFS-enabled workers (including this orchestrator).
@@ -540,6 +689,10 @@ func Orchestrate(ctx context.Context, volume, brickPath, mountPoint string, work
 	}
 
 	logging.L().Infow("gluster orchestration completed successfully", "volume", volume, "mount", mountPoint)
+
+	// Print comprehensive cluster status.
+	PrintClusterStatus(ctx, volume, mountPoint)
+
 	return nil
 }
 
