@@ -19,6 +19,7 @@ import (
 	"clusterctl/internal/ipdetect"
 	"clusterctl/internal/logging"
 	"clusterctl/internal/overlay"
+	"clusterctl/internal/portainer"
 	"clusterctl/internal/swarm"
 )
 
@@ -31,6 +32,7 @@ type JoinOptions struct {
 	OverlayConfig    string
 	EnableGluster    bool
 	UseIPAddress     bool // If true, use IP address instead of hostname for Swarm/Gluster identity
+	DeployPortainer  bool // If true, deploy Portainer and Portainer Agent (manager nodes only)
 }
 
 type ResetOptions struct {
@@ -153,6 +155,15 @@ func Join(ctx context.Context, opts JoinOptions) error {
 		}
 	} else {
 		log.Infow("gluster not enabled for this node by controller")
+	}
+
+	// Deploy Portainer if requested (manager nodes only).
+	if opts.DeployPortainer && opts.Role == "manager" {
+		log.Infow("deploying Portainer and Portainer Agent")
+		if err := portainer.DeployPortainer(ctx); err != nil {
+			log.Warnw("portainer deployment failed (non-fatal)", "err", err)
+			// Non-fatal; continue.
+		}
 	}
 
 	log.Infow("node join completed")
