@@ -54,16 +54,19 @@ const (
 )
 
 type NodeResponse struct {
-	Status           NodeResponseStatus `json:"status"`
-	SwarmRole        string             `json:"swarmRole"`
-	SwarmJoinToken   string             `json:"swarmJoinToken"`
-	SwarmManagerAddr string             `json:"swarmManagerAddr"`
-	OverlayType      string             `json:"overlayType"`
-	OverlayPayload   string             `json:"overlayPayload"`
-	GlusterEnabled   bool               `json:"glusterEnabled"`
-	GlusterVolume    string             `json:"glusterVolume"`
-	GlusterMount     string             `json:"glusterMount"`
-	GlusterBrick     string             `json:"glusterBrick"`
+	Status              NodeResponseStatus `json:"status"`
+	SwarmRole           string             `json:"swarmRole"`
+	SwarmJoinToken      string             `json:"swarmJoinToken"`
+	SwarmManagerAddr    string             `json:"swarmManagerAddr"`
+	OverlayType         string             `json:"overlayType"`
+	OverlayPayload      string             `json:"overlayPayload"`
+	GlusterEnabled      bool               `json:"glusterEnabled"`
+	GlusterVolume       string             `json:"glusterVolume"`
+	GlusterMount        string             `json:"glusterMount"`
+	GlusterBrick        string             `json:"glusterBrick"`
+	GlusterOrchestrator bool               `json:"glusterOrchestrator"`
+	GlusterWorkerNodes  []string           `json:"glusterWorkerNodes,omitempty"`
+	GlusterReady        bool               `json:"glusterReady"`
 }
 
 // MasterInit prepares a host as the initial Swarm manager and optional GlusterFS brick.

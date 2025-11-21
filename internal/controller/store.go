@@ -13,11 +13,13 @@ import (
 // clusterState is the on-disk representation of controller state.
 // It includes node registrations and cluster-wide GlusterFS configuration.
 type clusterState struct {
-	Nodes          []NodeRegistration `json:"nodes"`
-	GlusterEnabled bool               `json:"glusterEnabled"`
-	GlusterVolume  string             `json:"glusterVolume"`
-	GlusterMount   string             `json:"glusterMount"`
-	GlusterBrick   string             `json:"glusterBrick"`
+	Nodes                     []NodeRegistration `json:"nodes"`
+	GlusterEnabled            bool               `json:"glusterEnabled"`
+	GlusterVolume             string             `json:"glusterVolume"`
+	GlusterMount              string             `json:"glusterMount"`
+	GlusterBrick              string             `json:"glusterBrick"`
+	GlusterOrchestratorHostname string           `json:"glusterOrchestratorHostname,omitempty"`
+	GlusterReady              bool               `json:"glusterReady"`
 }
 
 // fileStore is a simple JSON-backed state store stored under the configured
@@ -159,5 +161,43 @@ func (s *fileStore) saveLocked() error {
 
 	logging.L().Infow("persisted controller state", "path", s.path, "nodes", len(s.state.Nodes))
 	return nil
+}
+
+// getGlusterWorkers returns all registered worker nodes that have GlusterCapable=true.
+func (s *fileStore) getGlusterWorkers() []NodeRegistration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var workers []NodeRegistration
+	for _, n := range s.state.Nodes {
+		if n.Role == "worker" && n.GlusterCapable {
+			workers = append(workers, n)
+		}
+	}
+	return workers
+}
+
+// setGlusterOrchestrator assigns the orchestrator hostname and persists state.
+func (s *fileStore) setGlusterOrchestrator(hostname string) (clusterState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.state.GlusterOrchestratorHostname = hostname
+	if err := s.saveLocked(); err != nil {
+		return clusterState{}, err
+	}
+	return s.state, nil
+}
+
+// setGlusterReady marks GlusterFS as ready (volume created and started) and persists state.
+func (s *fileStore) setGlusterReady(ready bool) (clusterState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.state.GlusterReady = ready
+	if err := s.saveLocked(); err != nil {
+		return clusterState{}, err
+	}
+	return s.state, nil
 }
 
