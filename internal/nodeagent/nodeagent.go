@@ -404,7 +404,15 @@ func convergeGluster(ctx context.Context, opts JoinOptions, resp *controller.Nod
 		if resp.GlusterOrchestrator {
 			// This worker is the orchestrator.
 			log.Infow("this worker is the gluster orchestrator", "workers", len(resp.GlusterWorkerNodes))
-			if err := gluster.Orchestrate(ctx, resp.GlusterVolume, resp.GlusterBrick, resp.GlusterMount, resp.GlusterWorkerNodes); err != nil {
+
+			// Determine our own identity (hostname or IP) for GlusterFS.
+			// This is the same address we registered with the controller.
+			selfIdentity, _, err := detectIdentity(ctx, opts)
+			if err != nil {
+				return fmt.Errorf("failed to detect self identity: %w", err)
+			}
+
+			if err := gluster.Orchestrate(ctx, resp.GlusterVolume, resp.GlusterBrick, resp.GlusterMount, resp.GlusterWorkerNodes, selfIdentity); err != nil {
 				return fmt.Errorf("gluster orchestration failed: %w", err)
 			}
 

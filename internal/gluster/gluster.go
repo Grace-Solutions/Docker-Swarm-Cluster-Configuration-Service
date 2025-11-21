@@ -301,9 +301,20 @@ func PeerProbe(ctx context.Context, hostname string) error {
 
 // WaitForPeersInCluster waits for all specified peers to be in "Peer in Cluster" state.
 // This is necessary because peer probe can return success before the peer is fully joined.
-func WaitForPeersInCluster(ctx context.Context, expectedPeers []string, timeout time.Duration) error {
+// expectedPeers should include ALL workers (including self), and this function will skip checking self.
+func WaitForPeersInCluster(ctx context.Context, expectedPeers []string, selfHostname string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	checkInterval := 2 * time.Second
+
+	// Count how many peers we expect to see (excluding self).
+	expectedPeerCount := 0
+	for _, peer := range expectedPeers {
+		if peer != selfHostname && peer != "localhost" {
+			expectedPeerCount++
+		}
+	}
+
+	logging.L().Infow(fmt.Sprintf("waiting for %d peers to join cluster (excluding self: %s)", expectedPeerCount, selfHostname))
 
 	for {
 		// Get current peer status.
@@ -317,17 +328,20 @@ func WaitForPeersInCluster(ctx context.Context, expectedPeers []string, timeout 
 
 			// Check if all expected peers are in cluster state.
 			allInCluster := true
+			peersChecked := 0
+
 			for _, peer := range expectedPeers {
-				// Skip checking self.
-				selfHostname, _ := os.Hostname()
+				// Skip checking self - we're the orchestrator, we don't appear in peer status.
 				if peer == selfHostname || peer == "localhost" {
 					continue
 				}
 
+				peersChecked++
+
 				// Look for the peer in the output and check its state.
 				// Format: "Hostname: <hostname>\nUuid: ...\nState: Peer in Cluster (Connected)"
 				if !strings.Contains(outStr, peer) {
-					logging.L().Infow(fmt.Sprintf("gluster peer not yet in status output: hostname=%s", peer))
+					logging.L().Infow(fmt.Sprintf("gluster peer not yet in status output: hostname=%s (checked %d/%d)", peer, peersChecked, expectedPeerCount))
 					allInCluster = false
 					break
 				}
@@ -359,8 +373,8 @@ func WaitForPeersInCluster(ctx context.Context, expectedPeers []string, timeout 
 				}
 			}
 
-			if allInCluster {
-				logging.L().Infow(fmt.Sprintf("all gluster peers are in cluster state: count=%d", len(expectedPeers)))
+			if allInCluster && peersChecked == expectedPeerCount {
+				logging.L().Infow(fmt.Sprintf("all gluster peers are in cluster state: peers=%d (self excluded)", peersChecked))
 				return nil
 			}
 		}
@@ -628,8 +642,9 @@ func PrintClusterStatus(ctx context.Context, volume, mountPoint string) {
 // Orchestrate performs the full multi-node GlusterFS setup as the orchestrator worker.
 // It peers all workers, creates the replica volume, waits for readiness, mounts locally, and adds to fstab.
 // workerHostnames should include ALL GlusterFS-enabled workers (including this orchestrator).
-func Orchestrate(ctx context.Context, volume, brickPath, mountPoint string, workerHostnames []string) error {
-	logging.L().Infow("gluster orchestration starting", "volume", volume, "workers", len(workerHostnames))
+// selfIdentity is this orchestrator's identity (hostname or IP) as it appears in workerHostnames.
+func Orchestrate(ctx context.Context, volume, brickPath, mountPoint string, workerHostnames []string, selfIdentity string) error {
+	logging.L().Infow(fmt.Sprintf("gluster orchestration starting: volume=%s workers=%d self=%s", volume, len(workerHostnames), selfIdentity))
 
 	if err := deps.EnsureGluster(ctx); err != nil {
 		return fmt.Errorf("gluster: orchestrator failed to install gluster: %w", err)
@@ -641,13 +656,8 @@ func Orchestrate(ctx context.Context, volume, brickPath, mountPoint string, work
 	}
 
 	// Peer probe all other workers (skip self).
-	selfHostname, err := os.Hostname()
-	if err != nil {
-		return fmt.Errorf("gluster: orchestrator failed to get hostname: %w", err)
-	}
-
 	for _, wh := range workerHostnames {
-		if wh == selfHostname || wh == "localhost" {
+		if wh == selfIdentity || wh == "localhost" {
 			continue
 		}
 		if err := PeerProbe(ctx, wh); err != nil {
@@ -657,8 +667,7 @@ func Orchestrate(ctx context.Context, volume, brickPath, mountPoint string, work
 
 	// Wait for all peers to be in "Peer in Cluster" state before creating volume.
 	// This is necessary because peer probe can return success before the peer is fully joined.
-	logging.L().Infow("waiting for all peers to join cluster")
-	if err := WaitForPeersInCluster(ctx, workerHostnames, 60*time.Second); err != nil {
+	if err := WaitForPeersInCluster(ctx, workerHostnames, selfIdentity, 60*time.Second); err != nil {
 		return fmt.Errorf("gluster: orchestrator failed waiting for peers: %w", err)
 	}
 
