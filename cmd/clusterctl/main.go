@@ -128,17 +128,25 @@ func masterInit(ctx context.Context, args []string) {
 		os.Exit(1)
 	}
 
-	if err := swarm.Init(ctx, *advertise); err != nil {
+	// If advertise address is not provided, auto-detect it using the same logic
+	// we use for overlay/CGNAT/local IP detection.
+	effectiveAdvertise := *advertise
+	if effectiveAdvertise == "" {
+		if adv, err := ipdetect.DetectPrimary(); err == nil {
+			effectiveAdvertise = adv.String()
+			logging.L().Infow(fmt.Sprintf("auto-detected advertise address: %s", effectiveAdvertise))
+		} else {
+			fmt.Fprintf(os.Stderr, "master init (primary-master) failed to detect advertise address: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	if err := swarm.Init(ctx, effectiveAdvertise); err != nil {
 		fmt.Fprintf(os.Stderr, "master init (primary-master) swarm init failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Detect and log the effective advertise address so it can be reused as the
-	// --master value on joining nodes. We prefer overlay/CGNAT/local IPs via the
-	// existing ipdetect logic.
-	if adv, err := ipdetect.DetectPrimary(); err == nil {
-		logging.L().Infow(fmt.Sprintf("primary master advertise address: %s:2377", adv.String()))
-	}
+	logging.L().Infow(fmt.Sprintf("primary master advertise address: %s:2377", effectiveAdvertise))
 
 	if err := swarm.EnsureDefaultNetworks(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "master init (primary-master) network setup failed: %v\n", err)
@@ -148,7 +156,7 @@ func masterInit(ctx context.Context, args []string) {
 	serveOpts := controller.ServeOptions{
 		ListenAddr:     *listen,
 		StateDir:       *stateDir,
-		AdvertiseAddr:  *advertise,
+		AdvertiseAddr:  effectiveAdvertise,
 		MinManagers:    *minManagers,
 		MinWorkers:     *minWorkers,
 		WaitForMinimum: *waitForMinimum,

@@ -138,10 +138,14 @@ func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts Serve
 
 	managers, workers := countRoles(state.Nodes)
 
-	// Ensure SwarmManagerAddr includes port :2377
+	// Ensure SwarmManagerAddr includes port :2377.
+	// If AdvertiseAddr is not set, we cannot provide a Swarm manager address,
+	// so leave it empty and let the client handle the fallback.
 	swarmManagerAddr := opts.AdvertiseAddr
-	if swarmManagerAddr != "" && !strings.Contains(swarmManagerAddr, ":") {
-		swarmManagerAddr = swarmManagerAddr + ":2377"
+	if swarmManagerAddr != "" {
+		if !strings.Contains(swarmManagerAddr, ":") {
+			swarmManagerAddr = swarmManagerAddr + ":2377"
+		}
 	}
 
 	resp := NodeResponse{

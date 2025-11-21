@@ -343,11 +343,11 @@ func convergeSwarm(ctx context.Context, opts JoinOptions, resp *controller.NodeR
 
 	managerAddr := resp.SwarmManagerAddr
 	if managerAddr == "" {
-		managerAddr = opts.MasterAddr
+		return fmt.Errorf("nodeagent: controller did not provide SwarmManagerAddr; cannot join swarm (role=%s)", role)
 	}
 
-	if resp.SwarmJoinToken == "" || managerAddr == "" {
-		return fmt.Errorf("nodeagent: missing swarm join token or manager address for role=%s (managerAddr=%q)", role, managerAddr)
+	if resp.SwarmJoinToken == "" {
+		return fmt.Errorf("nodeagent: missing swarm join token for role=%s", role)
 	}
 
 	logging.L().Infow(fmt.Sprintf("joining swarm as %s using manager %s and token %s", role, managerAddr, resp.SwarmJoinToken))
