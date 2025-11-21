@@ -240,6 +240,86 @@ func PeerProbe(ctx context.Context, hostname string) error {
 	return fmt.Errorf("gluster: peer probe failed for %s: max retries exceeded", hostname)
 }
 
+// WaitForPeersInCluster waits for all specified peers to be in "Peer in Cluster" state.
+// This is necessary because peer probe can return success before the peer is fully joined.
+func WaitForPeersInCluster(ctx context.Context, expectedPeers []string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	checkInterval := 2 * time.Second
+
+	for {
+		// Get current peer status.
+		cmd := exec.CommandContext(ctx, "gluster", "peer", "status")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			// If peer status fails, retry.
+			logging.L().Warnw(fmt.Sprintf("gluster peer status check failed, retrying: %v", err))
+		} else {
+			outStr := string(out)
+
+			// Check if all expected peers are in cluster state.
+			allInCluster := true
+			for _, peer := range expectedPeers {
+				// Skip checking self.
+				selfHostname, _ := os.Hostname()
+				if peer == selfHostname || peer == "localhost" {
+					continue
+				}
+
+				// Look for the peer in the output and check its state.
+				// Format: "Hostname: <hostname>\nUuid: ...\nState: Peer in Cluster (Connected)"
+				if !strings.Contains(outStr, peer) {
+					logging.L().Infow(fmt.Sprintf("gluster peer not yet in status output: hostname=%s", peer))
+					allInCluster = false
+					break
+				}
+
+				// Find the state line for this peer.
+				lines := strings.Split(outStr, "\n")
+				foundPeer := false
+				for i, line := range lines {
+					if strings.Contains(line, "Hostname:") && strings.Contains(line, peer) {
+						foundPeer = true
+						// Look for the State line (should be within next few lines).
+						for j := i + 1; j < len(lines) && j < i+5; j++ {
+							if strings.Contains(lines[j], "State:") {
+								if !strings.Contains(lines[j], "Peer in Cluster") {
+									logging.L().Infow(fmt.Sprintf("gluster peer not yet in cluster state: hostname=%s state=%s", peer, strings.TrimSpace(lines[j])))
+									allInCluster = false
+								}
+								break
+							}
+						}
+						break
+					}
+				}
+
+				if !foundPeer {
+					logging.L().Infow(fmt.Sprintf("gluster peer not found in status: hostname=%s", peer))
+					allInCluster = false
+					break
+				}
+			}
+
+			if allInCluster {
+				logging.L().Infow(fmt.Sprintf("all gluster peers are in cluster state: count=%d", len(expectedPeers)))
+				return nil
+			}
+		}
+
+		// Check timeout.
+		if time.Now().After(deadline) {
+			return fmt.Errorf("gluster: timeout waiting for peers to join cluster after %v", timeout)
+		}
+
+		// Wait before next check.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(checkInterval):
+		}
+	}
+}
+
 // CreateReplicaVolume creates a replicated GlusterFS volume across multiple bricks.
 // brickPaths should be in the format "hostname:/path/to/brick".
 // It is idempotent: if the volume already exists, it returns nil.
@@ -424,6 +504,13 @@ func Orchestrate(ctx context.Context, volume, brickPath, mountPoint string, work
 		if err := PeerProbe(ctx, wh); err != nil {
 			return fmt.Errorf("gluster: orchestrator failed to peer probe %s: %w", wh, err)
 		}
+	}
+
+	// Wait for all peers to be in "Peer in Cluster" state before creating volume.
+	// This is necessary because peer probe can return success before the peer is fully joined.
+	logging.L().Infow("waiting for all peers to join cluster")
+	if err := WaitForPeersInCluster(ctx, workerHostnames, 60*time.Second); err != nil {
+		return fmt.Errorf("gluster: orchestrator failed waiting for peers: %w", err)
 	}
 
 	// Build brick paths for volume creation.
