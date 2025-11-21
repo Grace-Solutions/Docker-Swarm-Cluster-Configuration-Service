@@ -91,6 +91,7 @@ func Join(ctx context.Context, opts JoinOptions) error {
 
 	backoff := time.Second
 	var lastResp *controller.NodeResponse
+	var prevResp *controller.NodeResponse
 
 	for {
 		if ctx.Err() != nil {
@@ -101,12 +102,22 @@ func Join(ctx context.Context, opts JoinOptions) error {
 		if err != nil {
 			log.Warnw("registration attempt failed", "err", err)
 		} else {
+			// Only log if response has changed.
+			if prevResp == nil || hasNodeResponseChanged(prevResp, resp) {
+				if resp.Status == controller.StatusReady {
+					log.Infow("controller signalled ready")
+				} else if resp.Status == controller.StatusWaiting {
+					log.Infow("controller signalled waiting, backing off")
+				}
+			}
+
 			lastResp = resp
+			prevResp = resp
+
 			if resp.Status == controller.StatusReady {
-				log.Infow("controller signalled ready")
 				break
 			} else if resp.Status == controller.StatusWaiting {
-				log.Infow("controller signalled waiting, backing off")
+				// Continue waiting
 			} else {
 				return errors.New("nodeagent: unknown status from controller")
 			}
@@ -128,7 +139,7 @@ func Join(ctx context.Context, opts JoinOptions) error {
 	}
 
 	log.Infow(fmt.Sprintf(
-		"controller response: status=%s swarmRole=%s managerAddr=%s hasJoinToken=%t glusterEnabled=%t glusterVolume=%s glusterMount=%s glusterBrick=%s",
+		"controller response: status=%s swarmRole=%s managerAddr=%s hasJoinToken=%t glusterEnabled=%t glusterVolume=%s glusterMount=%s glusterBrick=%s glusterOrchestrator=%t glusterReady=%t deployPortainer=%t",
 		lastResp.Status,
 		lastResp.SwarmRole,
 		lastResp.SwarmManagerAddr,
@@ -137,6 +148,9 @@ func Join(ctx context.Context, opts JoinOptions) error {
 		lastResp.GlusterVolume,
 		lastResp.GlusterMount,
 		lastResp.GlusterBrick,
+		lastResp.GlusterOrchestrator,
+		lastResp.GlusterReady,
+		lastResp.DeployPortainer,
 	))
 
 	if err := overlay.EnsureConnected(ctx, opts.OverlayProvider, opts.OverlayConfig); err != nil {
@@ -567,5 +581,31 @@ func signalGlusterReady(ctx context.Context, masterAddr string) error {
 
 	_, err = registerOnce(ctx, masterAddr, reg)
 	return err
+}
+
+// hasNodeResponseChanged checks if the response has changed in any meaningful way.
+func hasNodeResponseChanged(old, new *controller.NodeResponse) bool {
+	if old == nil || new == nil {
+		return true
+	}
+	if old.Status != new.Status {
+		return true
+	}
+	if old.SwarmJoinToken != new.SwarmJoinToken {
+		return true
+	}
+	if old.GlusterEnabled != new.GlusterEnabled {
+		return true
+	}
+	if old.GlusterReady != new.GlusterReady {
+		return true
+	}
+	if old.GlusterOrchestrator != new.GlusterOrchestrator {
+		return true
+	}
+	if old.DeployPortainer != new.DeployPortainer {
+		return true
+	}
+	return false
 }
 

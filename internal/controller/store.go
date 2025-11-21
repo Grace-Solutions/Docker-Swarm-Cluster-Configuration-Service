@@ -26,9 +26,10 @@ type clusterState struct {
 // fileStore is a simple JSON-backed state store stored under the configured
 // state directory. It is safe for concurrent use by multiple goroutines.
 type fileStore struct {
-	path  string
-	mu    sync.Mutex
-	state clusterState
+	path          string
+	mu            sync.Mutex
+	state         clusterState
+	lastResponses map[string]*NodeResponse // key: "hostname:role"
 }
 
 func newFileStore(stateDir string) (*fileStore, error) {
@@ -39,7 +40,10 @@ func newFileStore(stateDir string) (*fileStore, error) {
 		return nil, err
 	}
 
-	s := &fileStore{path: filepath.Join(stateDir, "state.json")}
+	s := &fileStore{
+		path:          filepath.Join(stateDir, "state.json"),
+		lastResponses: make(map[string]*NodeResponse),
+	}
 	if err := s.loadLocked(); err != nil {
 		return nil, err
 	}
@@ -219,5 +223,26 @@ func (s *fileStore) setPortainerDeployer(hostname string) (clusterState, error) 
 		return clusterState{}, err
 	}
 	return s.state, nil
+}
+
+// getLastResponse retrieves the last response sent to a node (for change detection).
+// Returns nil if no previous response exists.
+func (s *fileStore) getLastResponse(hostname, role string) *NodeResponse {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := hostname + ":" + role
+	return s.lastResponses[key]
+}
+
+// setLastResponse stores the last response sent to a node (for change detection).
+func (s *fileStore) setLastResponse(hostname, role string, resp *NodeResponse) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := hostname + ":" + role
+	// Make a copy to avoid mutation issues.
+	respCopy := *resp
+	s.lastResponses[key] = &respCopy
 }
 

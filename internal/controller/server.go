@@ -296,26 +296,43 @@ func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts Serve
 		}
 	}
 
-	logging.L().Infow(fmt.Sprintf(
-		"handled node registration: hostname=%s sentAddress=%s resolvedIP=%s role=%s action=%s status=%s managers=%d workers=%d glusterClusterEnabled=%t glusterForNode=%t glusterVolume=%s glusterMount=%s glusterBrick=%s glusterOrchestrator=%t glusterReady=%t deployPortainer=%t portainerDeployer=%s",
-		reg.Hostname,
-		sentAddress,
-		resolvedIP,
-		reg.Role,
-		action,
-		resp.Status,
-		totalManagers,
-		workers,
-		state.GlusterEnabled,
-		glusterForNode,
-		resp.GlusterVolume,
-		resp.GlusterMount,
-		resp.GlusterBrick,
-		resp.GlusterOrchestrator,
-		resp.GlusterReady,
-		resp.DeployPortainer,
-		state.PortainerDeployerHostname,
-	))
+	// Only log if this is a register action or if the response has changed.
+	shouldLog := action == "register"
+	if !shouldLog {
+		// Check if response has changed from last time.
+		lastResp := store.getLastResponse(reg.Hostname, reg.Role)
+		if lastResp == nil || hasResponseChanged(lastResp, &resp) {
+			shouldLog = true
+		}
+	}
+
+	if shouldLog {
+		logging.L().Infow(fmt.Sprintf(
+			"handled node registration: hostname=%s sentAddress=%s resolvedIP=%s role=%s action=%s status=%s managers=%d workers=%d glusterClusterEnabled=%t glusterForNode=%t glusterVolume=%s glusterMount=%s glusterBrick=%s glusterOrchestrator=%t glusterReady=%t deployPortainer=%t portainerDeployer=%s",
+			reg.Hostname,
+			sentAddress,
+			resolvedIP,
+			reg.Role,
+			action,
+			resp.Status,
+			totalManagers,
+			workers,
+			state.GlusterEnabled,
+			glusterForNode,
+			resp.GlusterVolume,
+			resp.GlusterMount,
+			resp.GlusterBrick,
+			resp.GlusterOrchestrator,
+			resp.GlusterReady,
+			resp.DeployPortainer,
+			state.PortainerDeployerHostname,
+		))
+
+		// Store this response for future comparison.
+		if action == "check-status" {
+			store.setLastResponse(reg.Hostname, reg.Role, &resp)
+		}
+	}
 
 	enc := json.NewEncoder(conn)
 	return enc.Encode(&resp)
@@ -331,5 +348,29 @@ func countRoles(nodes []NodeRegistration) (managers, workers int) {
 		}
 	}
 	return managers, workers
+}
+
+// hasResponseChanged checks if the response has changed in any meaningful way.
+func hasResponseChanged(old, new *NodeResponse) bool {
+	if old.Status != new.Status {
+		return true
+	}
+	if old.SwarmJoinToken != new.SwarmJoinToken {
+		return true
+	}
+	if old.GlusterEnabled != new.GlusterEnabled {
+		return true
+	}
+	if old.GlusterReady != new.GlusterReady {
+		return true
+	}
+	if old.GlusterOrchestrator != new.GlusterOrchestrator {
+		return true
+	}
+	if old.DeployPortainer != new.DeployPortainer {
+		return true
+	}
+	// Don't compare worker lists as they can change frequently without being meaningful.
+	return false
 }
 
