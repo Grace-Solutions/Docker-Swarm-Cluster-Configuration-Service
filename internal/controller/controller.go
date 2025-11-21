@@ -75,6 +75,8 @@ type NodeResponse struct {
 // It ensures the controller state directory exists and, when requested, records
 // cluster-wide GlusterFS configuration that will be sent to Gluster-capable
 // nodes as they join.
+//
+// MasterInit clears any existing node registrations to ensure a clean start.
 func MasterInit(ctx context.Context, opts MasterInitOptions) error {
 	_ = ctx // reserved for potential future orchestration work
 
@@ -84,6 +86,11 @@ func MasterInit(ctx context.Context, opts MasterInitOptions) error {
 
 	store, err := newFileStore(opts.StateDir)
 	if err != nil {
+		return err
+	}
+
+	// Clear any existing node registrations to start fresh.
+	if _, err := store.reset(); err != nil {
 		return err
 	}
 
