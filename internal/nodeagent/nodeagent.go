@@ -154,8 +154,9 @@ func Join(ctx context.Context, opts JoinOptions) error {
 			return err
 		}
 
-		// Deploy Portainer if requested (manager nodes only, after GlusterFS is ready).
-		if opts.DeployPortainer && opts.Role == "manager" {
+		// Deploy Portainer if requested (worker nodes only, after GlusterFS is ready).
+		// Portainer runs on workers to avoid consuming manager resources.
+		if opts.DeployPortainer && opts.Role == "worker" {
 			log.Infow("deploying Portainer and Portainer Agent (GlusterFS is ready)")
 			if err := portainer.DeployPortainer(ctx); err != nil {
 				log.Warnw("portainer deployment failed (non-fatal)", "err", err)
@@ -165,8 +166,9 @@ func Join(ctx context.Context, opts JoinOptions) error {
 	} else {
 		log.Infow("gluster not enabled for this node by controller")
 
-		// Deploy Portainer if requested (manager nodes only, no GlusterFS dependency).
-		if opts.DeployPortainer && opts.Role == "manager" {
+		// Deploy Portainer if requested (worker nodes only, no GlusterFS dependency).
+		// Portainer runs on workers to avoid consuming manager resources.
+		if opts.DeployPortainer && opts.Role == "worker" {
 			log.Infow("deploying Portainer and Portainer Agent (no GlusterFS)")
 			if err := portainer.DeployPortainer(ctx); err != nil {
 				log.Warnw("portainer deployment failed (non-fatal)", "err", err)

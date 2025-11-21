@@ -78,6 +78,7 @@ func deployPortainerAgent(ctx context.Context) error {
 }
 
 // deployPortainerCE deploys Portainer CE as a replicated service with replica count of 1.
+// Runs on worker nodes only.
 func deployPortainerCE(ctx context.Context) error {
 	log := logging.L()
 
@@ -95,7 +96,7 @@ func deployPortainerCE(ctx context.Context) error {
 		}
 	}
 
-	log.Infow("deploying portainer CE as replicated service (replica=1)")
+	log.Infow("deploying portainer CE as replicated service (replica=1, workers only)")
 
 	// Ensure the data directory exists.
 	mkdirCmd := exec.CommandContext(ctx, "mkdir", "-p", portainerDataPath)
@@ -114,12 +115,13 @@ func deployPortainerCE(ctx context.Context) error {
 	}
 
 	// Create the Portainer CE service.
-	// Use mode=host to bind ports directly on the manager node (not routing mesh).
+	// Use mode=host to bind ports directly on the worker node (bypasses routing mesh).
+	// With mode=host, ports are only accessible on the specific worker running Portainer.
 	args := []string{
 		"service", "create",
 		"--name", "portainer",
 		"--replicas", "1",
-		"--constraint", "node.role==manager",
+		"--constraint", "node.role==worker",
 		"--network", "DOCKER-SWARM-INTERNAL",
 		"--network", "DOCKER-SWARM-EXTERNAL",
 		"--publish", "published=9443,target=9443,protocol=tcp,mode=host",
