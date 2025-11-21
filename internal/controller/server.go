@@ -135,9 +135,9 @@ func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts Serve
 	} else if !opts.WaitForMinimum {
 		resp.Status = StatusReady
 	} else {
-		// MinManagers and MinWorkers count ADDITIONAL nodes beyond the primary master.
-		// The primary master is always a manager but is not counted in state.Nodes.
-		// So we need: (managers + 1) >= opts.MinManagers to account for the primary.
+		// MinManagers and MinWorkers include the primary master in the count.
+		// The primary master is always a manager but is not in state.Nodes.
+		// So we add +1 to the manager count to include the primary master.
 		totalManagers := managers + 1 // +1 for primary master
 		if totalManagers >= opts.MinManagers && workers >= opts.MinWorkers {
 			resp.Status = StatusReady
@@ -196,14 +196,23 @@ func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts Serve
 		}
 	}
 
+	// Calculate total counts including the primary master for logging.
+	totalManagers := managers
+	if reg.Role == "manager" || reg.Role == "" {
+		totalManagers = managers + 1 // +1 for primary master
+	} else {
+		totalManagers = managers + 1 // +1 for primary master
+	}
+
 	logging.L().Infow(fmt.Sprintf(
-		"handled node registration: hostname=%s role=%s ip=%s action=%s status=%s managers=%d workers=%d glusterClusterEnabled=%t glusterForNode=%t glusterVolume=%s glusterMount=%s glusterBrick=%s glusterOrchestrator=%t glusterReady=%t",
+		"handled node registration: hostname=%s sentHostname=%s sentIP=%s role=%s action=%s status=%s managers=%d workers=%d glusterClusterEnabled=%t glusterForNode=%t glusterVolume=%s glusterMount=%s glusterBrick=%s glusterOrchestrator=%t glusterReady=%t",
 		reg.Hostname,
-		reg.Role,
+		reg.Hostname,
 		reg.IP,
+		reg.Role,
 		action,
 		resp.Status,
-		managers,
+		totalManagers,
 		workers,
 		state.GlusterEnabled,
 		glusterForNode,

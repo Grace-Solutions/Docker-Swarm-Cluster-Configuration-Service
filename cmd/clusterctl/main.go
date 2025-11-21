@@ -236,6 +236,7 @@ func nodeJoin(ctx context.Context, args []string) {
 	overlayProvider := fs.String("overlay-provider", "none", "overlay provider (netbird|tailscale|wireguard|none)")
 	overlayConfig := fs.String("overlay-config", "", "overlay provider config string (e.g. setup/auth key for netbird/tailscale)")
 	enableGluster := fs.Bool("enable-glusterfs", false, "enable GlusterFS on this node")
+	useIPAddress := fs.Bool("use-ip-address", false, "use IP address instead of hostname for Swarm/Gluster identity (default: use hostname)")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
@@ -248,6 +249,7 @@ func nodeJoin(ctx context.Context, args []string) {
 		OverlayProvider:  *overlayProvider,
 		OverlayConfig:    *overlayConfig,
 		EnableGluster:    *enableGluster,
+		UseIPAddress:     *useIPAddress,
 	}
 
 	if err := nodeagent.Join(ctx, opts); err != nil {

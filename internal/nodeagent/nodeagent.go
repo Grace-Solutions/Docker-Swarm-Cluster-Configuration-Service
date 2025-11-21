@@ -30,6 +30,7 @@ type JoinOptions struct {
 	OverlayProvider  string
 	OverlayConfig    string
 	EnableGluster    bool
+	UseIPAddress     bool // If true, use IP address instead of hostname for Swarm/Gluster identity
 }
 
 type ResetOptions struct {
@@ -77,7 +78,7 @@ func Join(ctx context.Context, opts JoinOptions) error {
 		"hostname", reg.Hostname,
 		"ip", reg.IP,
 	)
-	log.Infow("starting node join")
+	log.Infow(fmt.Sprintf("starting node join: sending to controller hostname=%s ip=%s role=%s glusterCapable=%t", reg.Hostname, reg.IP, reg.Role, reg.GlusterCapable))
 
 	backoff := time.Second
 	var lastResp *controller.NodeResponse
@@ -262,7 +263,17 @@ func detectIdentity(ctx context.Context, opts JoinOptions) (addr string, hostnam
 		return addr, hostname, nil
 	}
 
-	// Try overlay-specific hostname where possible.
+	// If UseIPAddress is true, skip hostname detection and use IP directly.
+	if opts.UseIPAddress {
+		ip, ierr := ipdetect.DetectPrimary()
+		if ierr != nil {
+			return "", "", ierr
+		}
+		addr = ip.String()
+		return addr, hostname, nil
+	}
+
+	// Try overlay-specific hostname where possible (default behavior).
 	overlayName := strings.ToLower(strings.TrimSpace(opts.OverlayProvider))
 	switch overlayName {
 	case "netbird":
