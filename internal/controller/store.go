@@ -163,6 +163,13 @@ func (s *fileStore) saveLocked() error {
 	return nil
 }
 
+// getState returns a snapshot of the current cluster state without modifying it.
+func (s *fileStore) getState() clusterState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state
+}
+
 // getGlusterWorkers returns all registered worker nodes that have GlusterCapable=true.
 func (s *fileStore) getGlusterWorkers() []NodeRegistration {
 	s.mu.Lock()

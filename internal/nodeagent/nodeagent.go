@@ -469,17 +469,18 @@ func waitForGlusterReady(ctx context.Context, opts JoinOptions) error {
 			return ctx.Err()
 		}
 
-		// Re-register to check GlusterReady status.
+		// Poll the controller for GlusterReady status without updating our registration.
+		// Use action="check-status" to avoid overwriting our existing registration.
 		hostname, err := os.Hostname()
 		if err != nil {
 			return err
 		}
 
 		reg := controller.NodeRegistration{
-			Hostname:       hostname,
-			Role:           opts.Role,
-			OS:             runtime.GOOS,
-			GlusterCapable: opts.EnableGluster,
+			Hostname: hostname,
+			Role:     opts.Role,
+			OS:       runtime.GOOS,
+			Action:   "check-status",
 		}
 
 		resp, err := registerOnce(ctx, opts.MasterAddr, reg)

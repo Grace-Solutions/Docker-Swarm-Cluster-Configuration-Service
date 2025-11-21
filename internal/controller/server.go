@@ -125,10 +125,16 @@ func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts Serve
 		state, aerr = store.removeRegistration(reg.Hostname, reg.Role)
 	case "gluster-ready":
 		// Orchestrator signals that GlusterFS volume is ready.
+		// Do NOT call addRegistration here, as the reg may have incomplete fields
+		// (e.g., missing IP) and would overwrite the existing worker registration.
 		state, aerr = store.setGlusterReady(true)
 		if aerr == nil {
 			logging.L().Infow("gluster volume marked ready by orchestrator", "hostname", reg.Hostname)
 		}
+	case "check-status":
+		// Node is polling for status (e.g., GlusterReady) without updating its registration.
+		// Just return the current state without modifying it.
+		state = store.getState()
 	default:
 		return errors.New("controller: unknown action")
 	}
@@ -204,8 +210,13 @@ func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts Serve
 				resp.GlusterOrchestrator = true
 				glusterWorkers := store.getGlusterWorkers()
 				for _, w := range glusterWorkers {
-					resp.GlusterWorkerNodes = append(resp.GlusterWorkerNodes, w.IP)
+					if w.IP != "" {
+						resp.GlusterWorkerNodes = append(resp.GlusterWorkerNodes, w.IP)
+					} else {
+						logging.L().Warnw(fmt.Sprintf("skipping worker with empty IP: hostname=%s role=%s", w.Hostname, w.Role))
+					}
 				}
+				logging.L().Infow(fmt.Sprintf("orchestrator assigned worker list: count=%d workers=%v", len(resp.GlusterWorkerNodes), resp.GlusterWorkerNodes))
 			}
 
 			glusterForNode = true
