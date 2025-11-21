@@ -71,6 +71,12 @@ func Join(ctx context.Context, opts JoinOptions) error {
 		GlusterCapable: opts.EnableGluster,
 	}
 
+	// Resolve the address to an IP for logging purposes.
+	resolvedIP := addr
+	if ips, err := net.LookupIP(addr); err == nil && len(ips) > 0 {
+		resolvedIP = ips[0].String()
+	}
+
 	log := logging.L().With(
 		"component", "nodeagent",
 		"master", opts.MasterAddr,
@@ -78,7 +84,7 @@ func Join(ctx context.Context, opts JoinOptions) error {
 		"hostname", reg.Hostname,
 		"ip", reg.IP,
 	)
-	log.Infow(fmt.Sprintf("starting node join: sending to controller hostname=%s ip=%s role=%s glusterCapable=%t", reg.Hostname, reg.IP, reg.Role, reg.GlusterCapable))
+	log.Infow(fmt.Sprintf("starting node join: sending to controller hostname=%s address=%s resolvedIP=%s role=%s glusterCapable=%t", reg.Hostname, reg.IP, resolvedIP, reg.Role, reg.GlusterCapable))
 
 	backoff := time.Second
 	var lastResp *controller.NodeResponse

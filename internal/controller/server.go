@@ -197,18 +197,19 @@ func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts Serve
 	}
 
 	// Calculate total counts including the primary master for logging.
-	totalManagers := managers
-	if reg.Role == "manager" || reg.Role == "" {
-		totalManagers = managers + 1 // +1 for primary master
-	} else {
-		totalManagers = managers + 1 // +1 for primary master
+	totalManagers := managers + 1 // +1 for primary master
+
+	// Resolve the address to an IP for logging purposes.
+	resolvedIP := reg.IP
+	if ips, err := net.LookupIP(reg.IP); err == nil && len(ips) > 0 {
+		resolvedIP = ips[0].String()
 	}
 
 	logging.L().Infow(fmt.Sprintf(
-		"handled node registration: hostname=%s sentHostname=%s sentIP=%s role=%s action=%s status=%s managers=%d workers=%d glusterClusterEnabled=%t glusterForNode=%t glusterVolume=%s glusterMount=%s glusterBrick=%s glusterOrchestrator=%t glusterReady=%t",
-		reg.Hostname,
+		"handled node registration: hostname=%s sentAddress=%s resolvedIP=%s role=%s action=%s status=%s managers=%d workers=%d glusterClusterEnabled=%t glusterForNode=%t glusterVolume=%s glusterMount=%s glusterBrick=%s glusterOrchestrator=%t glusterReady=%t",
 		reg.Hostname,
 		reg.IP,
+		resolvedIP,
 		reg.Role,
 		action,
 		resp.Status,
