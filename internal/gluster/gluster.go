@@ -299,9 +299,11 @@ func PeerProbe(ctx context.Context, hostname string) error {
 	return fmt.Errorf("gluster: peer probe failed for %s: max retries exceeded", hostname)
 }
 
-// WaitForPeersInCluster waits for all specified peers to be in "Peer in Cluster" state.
-// This is necessary because peer probe can return success before the peer is fully joined.
-// expectedPeers should include ALL workers (including self), and this function will skip checking self.
+// WaitForPeersInCluster waits for all workers to be ready in the GlusterFS cluster.
+// This includes checking that:
+// 1. Localhost (self) is Connected via `gluster pool list`
+// 2. All other peers (excluding self) are in "Peer in Cluster" state via `gluster peer status`
+// expectedPeers should include ALL workers (including self).
 func WaitForPeersInCluster(ctx context.Context, expectedPeers []string, selfHostname string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	checkInterval := 2 * time.Second
@@ -314,68 +316,96 @@ func WaitForPeersInCluster(ctx context.Context, expectedPeers []string, selfHost
 		}
 	}
 
-	logging.L().Infow(fmt.Sprintf("waiting for %d peers to join cluster (excluding self: %s)", expectedPeerCount, selfHostname))
+	logging.L().Infow(fmt.Sprintf("waiting for cluster to be ready: total_workers=%d other_peers=%d self=%s",
+		len(expectedPeers), expectedPeerCount, selfHostname))
 
 	for {
-		// Get current peer status.
-		cmd := exec.CommandContext(ctx, "gluster", "peer", "status")
+		allReady := true
+
+		// First, check that localhost (self) is connected via `gluster pool list`.
+		cmd := exec.CommandContext(ctx, "gluster", "pool", "list")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			// If peer status fails, retry.
-			logging.L().Warnw(fmt.Sprintf("gluster peer status check failed, retrying: %v", err))
+			logging.L().Warnw(fmt.Sprintf("gluster pool list check failed, retrying: %v", err))
+			allReady = false
 		} else {
 			outStr := string(out)
+			localhostConnected := false
 
-			// Check if all expected peers are in cluster state.
-			allInCluster := true
-			peersChecked := 0
-
-			for _, peer := range expectedPeers {
-				// Skip checking self - we're the orchestrator, we don't appear in peer status.
-				if peer == selfHostname || peer == "localhost" {
-					continue
-				}
-
-				peersChecked++
-
-				// Look for the peer in the output and check its state.
-				// Format: "Hostname: <hostname>\nUuid: ...\nState: Peer in Cluster (Connected)"
-				if !strings.Contains(outStr, peer) {
-					logging.L().Infow(fmt.Sprintf("gluster peer not yet in status output: hostname=%s (checked %d/%d)", peer, peersChecked, expectedPeerCount))
-					allInCluster = false
-					break
-				}
-
-				// Find the state line for this peer.
-				lines := strings.Split(outStr, "\n")
-				foundPeer := false
-				for i, line := range lines {
-					if strings.Contains(line, "Hostname:") && strings.Contains(line, peer) {
-						foundPeer = true
-						// Look for the State line (should be within next few lines).
-						for j := i + 1; j < len(lines) && j < i+5; j++ {
-							if strings.Contains(lines[j], "State:") {
-								if !strings.Contains(lines[j], "Peer in Cluster") {
-									logging.L().Infow(fmt.Sprintf("gluster peer not yet in cluster state: hostname=%s state=%s", peer, strings.TrimSpace(lines[j])))
-									allInCluster = false
-								}
-								break
-							}
-						}
-						break
-					}
-				}
-
-				if !foundPeer {
-					logging.L().Infow(fmt.Sprintf("gluster peer not found in status: hostname=%s", peer))
-					allInCluster = false
+			// Look for "localhost" with "Connected" state.
+			lines := strings.Split(outStr, "\n")
+			for _, line := range lines {
+				if strings.Contains(line, "localhost") && strings.Contains(line, "Connected") {
+					localhostConnected = true
 					break
 				}
 			}
 
-			if allInCluster && peersChecked == expectedPeerCount {
-				logging.L().Infow(fmt.Sprintf("all gluster peers are in cluster state: peers=%d (self excluded)", peersChecked))
-				return nil
+			if !localhostConnected {
+				logging.L().Infow("gluster localhost not yet connected in pool")
+				allReady = false
+			}
+		}
+
+		// Second, check that all other peers are in "Peer in Cluster" state via `gluster peer status`.
+		if allReady {
+			cmd = exec.CommandContext(ctx, "gluster", "peer", "status")
+			out, err = cmd.CombinedOutput()
+			if err != nil {
+				logging.L().Warnw(fmt.Sprintf("gluster peer status check failed, retrying: %v", err))
+				allReady = false
+			} else {
+				outStr := string(out)
+				peersChecked := 0
+
+				for _, peer := range expectedPeers {
+					// Skip checking self - we validated it via pool list above.
+					if peer == selfHostname || peer == "localhost" {
+						continue
+					}
+
+					peersChecked++
+
+					// Look for the peer in the output and check its state.
+					// Format: "Hostname: <hostname>\nUuid: ...\nState: Peer in Cluster (Connected)"
+					if !strings.Contains(outStr, peer) {
+						logging.L().Infow(fmt.Sprintf("gluster peer not yet in status output: hostname=%s (checked %d/%d)", peer, peersChecked, expectedPeerCount))
+						allReady = false
+						break
+					}
+
+					// Find the state line for this peer.
+					lines := strings.Split(outStr, "\n")
+					foundPeer := false
+					for i, line := range lines {
+						if strings.Contains(line, "Hostname:") && strings.Contains(line, peer) {
+							foundPeer = true
+							// Look for the State line (should be within next few lines).
+							for j := i + 1; j < len(lines) && j < i+5; j++ {
+								if strings.Contains(lines[j], "State:") {
+									if !strings.Contains(lines[j], "Peer in Cluster") {
+										logging.L().Infow(fmt.Sprintf("gluster peer not yet in cluster state: hostname=%s state=%s", peer, strings.TrimSpace(lines[j])))
+										allReady = false
+									}
+									break
+								}
+							}
+							break
+						}
+					}
+
+					if !foundPeer {
+						logging.L().Infow(fmt.Sprintf("gluster peer not found in status: hostname=%s", peer))
+						allReady = false
+						break
+					}
+				}
+
+				if allReady && peersChecked == expectedPeerCount {
+					logging.L().Infow(fmt.Sprintf("all gluster workers are ready in cluster: total=%d (localhost + %d peers)",
+						len(expectedPeers), peersChecked))
+					return nil
+				}
 			}
 		}
 
