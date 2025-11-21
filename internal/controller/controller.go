@@ -42,7 +42,8 @@ type NodeRegistration struct {
 	Timestamp      time.Time `json:"timestamp"`
 	// Action controls how the controller treats this registration. If empty or
 	// "register", the node is upserted into state. If "deregister", the node
-	// is removed from state.
+	// is removed from state. If "gluster-ready", the orchestrator signals that
+	// the GlusterFS volume is ready for mounting.
 	Action string `json:"action,omitempty"`
 }
 

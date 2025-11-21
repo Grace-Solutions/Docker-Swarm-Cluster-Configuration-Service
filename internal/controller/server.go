@@ -103,6 +103,12 @@ func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts Serve
 		state, aerr = store.addRegistration(reg)
 	case "deregister":
 		state, aerr = store.removeRegistration(reg.Hostname, reg.Role)
+	case "gluster-ready":
+		// Orchestrator signals that GlusterFS volume is ready.
+		state, aerr = store.setGlusterReady(true)
+		if aerr == nil {
+			logging.L().Infow("gluster volume marked ready by orchestrator", "hostname", reg.Hostname)
+		}
 	default:
 		return errors.New("controller: unknown action")
 	}
@@ -137,16 +143,48 @@ func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts Serve
 	}
 
 	glusterForNode := false
-	if reg.GlusterCapable && state.GlusterEnabled {
+	if reg.GlusterCapable && state.GlusterEnabled && action == "register" {
 		resp.GlusterEnabled = true
 		resp.GlusterVolume = state.GlusterVolume
 		resp.GlusterMount = state.GlusterMount
-		resp.GlusterBrick = state.GlusterBrick
-		glusterForNode = true
+		resp.GlusterReady = state.GlusterReady
+
+		if reg.Role == "worker" {
+			// Workers host bricks.
+			resp.GlusterBrick = state.GlusterBrick
+
+			// Assign orchestrator if not yet assigned.
+			if state.GlusterOrchestratorHostname == "" {
+				if _, err := store.setGlusterOrchestrator(reg.Hostname); err != nil {
+					logging.L().Warnw("failed to assign gluster orchestrator", "hostname", reg.Hostname, "err", err)
+				} else {
+					state.GlusterOrchestratorHostname = reg.Hostname
+					logging.L().Infow("assigned gluster orchestrator", "hostname", reg.Hostname)
+				}
+			}
+
+			// If this worker is the orchestrator, send the list of all gluster workers.
+			if state.GlusterOrchestratorHostname == reg.Hostname {
+				resp.GlusterOrchestrator = true
+				glusterWorkers := store.getGlusterWorkers()
+				for _, w := range glusterWorkers {
+					resp.GlusterWorkerNodes = append(resp.GlusterWorkerNodes, w.IP)
+				}
+			}
+
+			glusterForNode = true
+		} else if reg.Role == "manager" {
+			// Managers mount only; they must wait for GlusterReady.
+			if !state.GlusterReady {
+				resp.Status = StatusWaiting
+				logging.L().Infow("manager waiting for gluster readiness", "hostname", reg.Hostname)
+			}
+			glusterForNode = true
+		}
 	}
 
 	logging.L().Infow(fmt.Sprintf(
-		"handled node registration: hostname=%s role=%s ip=%s action=%s status=%s managers=%d workers=%d glusterClusterEnabled=%t glusterForNode=%t glusterVolume=%s glusterMount=%s glusterBrick=%s",
+		"handled node registration: hostname=%s role=%s ip=%s action=%s status=%s managers=%d workers=%d glusterClusterEnabled=%t glusterForNode=%t glusterVolume=%s glusterMount=%s glusterBrick=%s glusterOrchestrator=%t glusterReady=%t",
 		reg.Hostname,
 		reg.Role,
 		reg.IP,
@@ -159,6 +197,8 @@ func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts Serve
 		resp.GlusterVolume,
 		resp.GlusterMount,
 		resp.GlusterBrick,
+		resp.GlusterOrchestrator,
+		resp.GlusterReady,
 	))
 
 	enc := json.NewEncoder(conn)
