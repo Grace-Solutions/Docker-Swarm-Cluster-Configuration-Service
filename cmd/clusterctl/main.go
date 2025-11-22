@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"clusterctl/internal/controller"
@@ -13,6 +14,7 @@ import (
 	"clusterctl/internal/ipdetect"
 	"clusterctl/internal/logging"
 	"clusterctl/internal/nodeagent"
+	"clusterctl/internal/overlay"
 	"clusterctl/internal/swarm"
 )
 
@@ -102,6 +104,7 @@ func masterInit(ctx context.Context, args []string) {
 	primary := fs.Bool("primary-master", false, "bootstrap this node as the initial Swarm manager and start the controller")
 	listen := fs.String("listen", defaultListenAddr, "controller listen address when --primary-master is set")
 	advertise := fs.String("advertise-addr", "", "swarm advertise address for this master (and controller advertise-addr)")
+	overlayProvider := fs.String("overlay-provider", "", "overlay network provider (netbird, tailscale, wireguard, none)")
 	minManagers := fs.Int("min-managers", 0, "minimum managers before ready when --primary-master is set")
 	minWorkers := fs.Int("min-workers", 0, "minimum workers before ready when --primary-master is set")
 	waitForMinimum := fs.Bool("wait-for-minimum", false, "gate responses until minimum nodes reached when --primary-master is set")
@@ -128,17 +131,11 @@ func masterInit(ctx context.Context, args []string) {
 		os.Exit(1)
 	}
 
-	// If advertise address is not provided, auto-detect it using the same logic
-	// we use for overlay/CGNAT/local IP detection.
+	// If advertise address is not provided, auto-detect it.
+	// Priority: overlay hostname > overlay IP > local IP
 	effectiveAdvertise := *advertise
 	if effectiveAdvertise == "" {
-		if adv, err := ipdetect.DetectPrimary(); err == nil {
-			effectiveAdvertise = adv.String()
-			logging.L().Infow(fmt.Sprintf("auto-detected advertise address: %s", effectiveAdvertise))
-		} else {
-			fmt.Fprintf(os.Stderr, "master init (primary-master) failed to detect advertise address: %v\n", err)
-			os.Exit(1)
-		}
+		effectiveAdvertise = detectAdvertiseAddress(ctx, *overlayProvider)
 	}
 
 	if err := swarm.Init(ctx, effectiveAdvertise); err != nil {
@@ -173,6 +170,7 @@ func masterServe(ctx context.Context, args []string) {
 	stateDir := fs.String("state-dir", defaultStateDir, "controller state directory")
 	listen := fs.String("listen", defaultListenAddr, "listen address")
 	advertise := fs.String("advertise-addr", "", "swarm advertise address")
+	overlayProvider := fs.String("overlay-provider", "", "overlay network provider (netbird, tailscale, wireguard, none)")
 	minManagers := fs.Int("min-managers", 0, "minimum managers before ready")
 	minWorkers := fs.Int("min-workers", 0, "minimum workers before ready")
 	waitForMinimum := fs.Bool("wait-for-minimum", false, "gate responses until minimum nodes reached")
@@ -180,10 +178,16 @@ func masterServe(ctx context.Context, args []string) {
 		os.Exit(2)
 	}
 
+	// If advertise address is not provided, auto-detect it.
+	effectiveAdvertise := *advertise
+	if effectiveAdvertise == "" {
+		effectiveAdvertise = detectAdvertiseAddress(ctx, *overlayProvider)
+	}
+
 	opts := controller.ServeOptions{
 		ListenAddr:     *listen,
 		StateDir:       *stateDir,
-		AdvertiseAddr:  *advertise,
+		AdvertiseAddr:  effectiveAdvertise,
 		MinManagers:    *minManagers,
 		MinWorkers:     *minWorkers,
 		WaitForMinimum: *waitForMinimum,
@@ -306,4 +310,30 @@ func nodeReset(ctx context.Context, args []string) {
 	}
 }
 
+// detectAdvertiseAddress detects the advertise address for Swarm.
+// Priority: overlay hostname > overlay IP > local IP
+func detectAdvertiseAddress(ctx context.Context, overlayProvider string) string {
+	// Try overlay-specific hostname first (preferred for stable identity).
+	overlayName := strings.ToLower(strings.TrimSpace(overlayProvider))
+	switch overlayName {
+	case "netbird":
+		if h, err := overlay.NetbirdHostname(ctx); err == nil && h != "" {
+			logging.L().Infow(fmt.Sprintf("auto-detected advertise address from Netbird: %s", h))
+			return h
+		}
+	case "tailscale":
+		if h, err := overlay.TailscaleHostname(ctx); err == nil && h != "" {
+			logging.L().Infow(fmt.Sprintf("auto-detected advertise address from Tailscale: %s", h))
+			return h
+		}
+	}
 
+	// Fallback: primary IP detection (CGNAT > RFC1918 > other > loopback).
+	if adv, err := ipdetect.DetectPrimary(); err == nil {
+		logging.L().Infow(fmt.Sprintf("auto-detected advertise address from IP: %s", adv.String()))
+		return adv.String()
+	}
+
+	logging.L().Warnw("failed to detect advertise address; using empty string")
+	return ""
+}
