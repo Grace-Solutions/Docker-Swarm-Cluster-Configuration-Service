@@ -54,19 +54,29 @@ func DeployPortainer(ctx context.Context, glusterEnabled bool, glusterMount stri
 }
 
 // deployPortainerAgent deploys the Portainer Agent as a global service.
+// Uses task-based hostname template for predictable DNS resolution.
 func deployPortainerAgent(ctx context.Context) error {
 	log := logging.L()
-	log.Infow("deploying portainer agent as global service")
+	log.Infow("deploying portainer agent as global service with task-based hostnames")
 
 	// Create the Portainer Agent service.
+	// hostname template: portainer-agent-{{.Task.Slot}} provides predictable hostnames
+	// tasks.portainer_agent DNS resolves to all agent task IPs
 	args := []string{
 		"service", "create",
 		"--name", "portainer_agent",
 		"--mode", "global",
 		"--constraint", "node.platform.os==linux",
 		"--network", "DOCKER-SWARM-INTERNAL",
+		"--hostname", "portainer-agent-{{.Task.Slot}}",
+		"--env", "AGENT_CLUSTER_ADDR=tasks.portainer_agent",
+		"--env", "LOG_LEVEL=INFO",
 		"--mount", "type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock",
 		"--mount", "type=bind,src=/var/lib/docker/volumes,dst=/var/lib/docker/volumes",
+		"--restart-condition", "on-failure",
+		"--restart-delay", "5s",
+		"--restart-max-attempts", "3",
+		"--restart-window", "120s",
 		portainerAgentImage,
 	}
 
@@ -82,15 +92,15 @@ func deployPortainerAgent(ctx context.Context) error {
 		return fmt.Errorf("failed to create portainer agent service: %w, output: %s", err, string(output))
 	}
 
-	log.Infow("portainer agent service created successfully")
+	log.Infow("portainer agent service created successfully with DNS: tasks.portainer_agent")
 	return nil
 }
 
 // deployPortainerCE deploys Portainer CE as a replicated service with replica count of 1.
-// Runs on worker nodes only.
+// Runs on worker nodes only. Uses task-based hostname template for predictable DNS resolution.
 func deployPortainerCE(ctx context.Context) error {
 	log := logging.L()
-	log.Infow("deploying portainer CE as replicated service (replica=1, workers only)")
+	log.Infow("deploying portainer CE as replicated service (replica=1, workers only) with task-based hostname")
 
 	// Ensure the data directory exists.
 	mkdirCmd := exec.CommandContext(ctx, "mkdir", "-p", portainerDataPath)
@@ -109,6 +119,8 @@ func deployPortainerCE(ctx context.Context) error {
 	}
 
 	// Create the Portainer CE service.
+	// hostname template: portainer-{{.Task.Slot}} provides predictable hostname (portainer-1)
+	// tasks.portainer_agent DNS resolves to all agent task IPs for cluster communication
 	// Use mode=ingress (default) to enable routing mesh - accessible on any node.
 	// This provides automatic failover: if Portainer moves to another worker, clients don't need to change IPs.
 	args := []string{
@@ -119,9 +131,22 @@ func deployPortainerCE(ctx context.Context) error {
 		"--constraint", "node.role==worker",
 		"--network", "DOCKER-SWARM-INTERNAL",
 		"--network", "DOCKER-SWARM-EXTERNAL",
-		"--publish", "published=9443,target=9443,protocol=tcp",
-		"--publish", "published=8000,target=8000,protocol=tcp",
+		"--hostname", "portainer-{{.Task.Slot}}",
+		"--env", "PORTAINER_AGENT_ADDR=tasks.portainer_agent",
+		"--env", "LOG_LEVEL=INFO",
+		"--publish", "published=9443,target=9443,protocol=tcp,mode=ingress",
+		"--publish", "published=8000,target=8000,protocol=tcp,mode=ingress",
 		"--mount", fmt.Sprintf("type=bind,src=%s,dst=/data", portainerDataPath),
+		"--restart-condition", "on-failure",
+		"--restart-delay", "5s",
+		"--restart-max-attempts", "3",
+		"--restart-window", "120s",
+		"--update-parallelism", "1",
+		"--update-delay", "10s",
+		"--update-failure-action", "rollback",
+		"--update-order", "stop-first",
+		"--rollback-parallelism", "1",
+		"--rollback-delay", "10s",
 		portainerCEImage,
 		"-H", "tcp://tasks.portainer_agent:9001",
 		"--tlsskipverify",
@@ -141,6 +166,7 @@ func deployPortainerCE(ctx context.Context) error {
 
 	log.Infow(fmt.Sprintf("portainer service created successfully: accessible at https://<any-node-ip>:9443 (routing mesh enabled), data stored at %s", portainerDataPath))
 	log.Infow(fmt.Sprintf("example: https://%s:9443", primaryIPStr))
+	log.Infow("portainer hostname: portainer-1, agent hostnames: portainer-agent-{{.Task.Slot}}, agent DNS: tasks.portainer_agent")
 	return nil
 }
 
