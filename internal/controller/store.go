@@ -18,8 +18,10 @@ type clusterState struct {
 	GlusterVolume               string             `json:"glusterVolume"`
 	GlusterMount                string             `json:"glusterMount"`
 	GlusterBrick                string             `json:"glusterBrick"`
-	GlusterOrchestratorHostname string             `json:"glusterOrchestratorHostname,omitempty"`
+	GlusterOrchestratorHostname string             `json:"glusterOrchestratorHostname,omitempty"` // Deprecated: controller now orchestrates via SSH
 	GlusterReady                bool               `json:"glusterReady"`
+	GlusterOrchestrated         bool               `json:"glusterOrchestrated"`         // True if controller has orchestrated GlusterFS setup via SSH
+	SwarmOrchestrated           bool               `json:"swarmOrchestrated"`           // True if controller has orchestrated Swarm setup via SSH
 	PortainerDeployerHostname   string             `json:"portainerDeployerHostname,omitempty"`
 }
 
@@ -244,5 +246,29 @@ func (s *fileStore) setLastResponse(hostname, role string, resp *NodeResponse) {
 	// Make a copy to avoid mutation issues.
 	respCopy := *resp
 	s.lastResponses[key] = &respCopy
+}
+
+// setGlusterOrchestrated marks GlusterFS as orchestrated by the controller.
+func (s *fileStore) setGlusterOrchestrated(orchestrated bool) (clusterState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.state.GlusterOrchestrated = orchestrated
+	if err := s.saveLocked(); err != nil {
+		return clusterState{}, err
+	}
+	return s.state, nil
+}
+
+// setSwarmOrchestrated marks Docker Swarm as orchestrated by the controller.
+func (s *fileStore) setSwarmOrchestrated(orchestrated bool) (clusterState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.state.SwarmOrchestrated = orchestrated
+	if err := s.saveLocked(); err != nil {
+		return clusterState{}, err
+	}
+	return s.state, nil
 }
 

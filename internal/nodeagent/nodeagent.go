@@ -169,10 +169,11 @@ func Join(ctx context.Context, opts JoinOptions) error {
 		return err
 	}
 
-	if err := convergeSwarm(ctx, opts, lastResp); err != nil {
-		log.Warnw("swarm convergence failed", "err", err)
-		return err
-	}
+	// NOTE: Swarm and GlusterFS setup is now orchestrated by the controller via SSH.
+	// Nodes no longer perform local convergence. They just wait for the controller
+	// to complete orchestration and then verify the setup.
+
+	log.Infow("waiting for controller to orchestrate GlusterFS and Swarm setup via SSH...")
 
 	// Only proceed with GlusterFS and Portainer if the controller says we're ready.
 	// Managers may get StatusWaiting if GlusterFS is not ready yet.
@@ -182,10 +183,13 @@ func Join(ctx context.Context, opts JoinOptions) error {
 	}
 
 	if lastResp.GlusterEnabled {
-		if err := convergeGluster(ctx, opts, lastResp); err != nil {
-			log.Warnw("gluster convergence failed", "err", err)
+		// Verify GlusterFS mount (controller should have mounted it via SSH)
+		log.Infow("verifying GlusterFS mount orchestrated by controller")
+		if err := verifyGlusterMount(ctx, lastResp.GlusterMount); err != nil {
+			log.Warnw("GlusterFS mount verification failed", "err", err)
 			return err
 		}
+		log.Infow("✅ GlusterFS mount verified successfully")
 
 		// Deploy Portainer if the controller assigned this worker to deploy it.
 		// The controller ensures only one worker gets the deployment job.
@@ -702,6 +706,32 @@ func installSSHKey(ctx context.Context, publicKey string) error {
 	}
 
 	logging.L().Infow(fmt.Sprintf("SSH public key added to %s", authorizedKeysPath))
+	return nil
+}
+
+// verifyGlusterMount verifies that GlusterFS is mounted at the specified path.
+func verifyGlusterMount(ctx context.Context, mount string) error {
+	if mount == "" {
+		return errors.New("mount path is empty")
+	}
+
+	// Check if the mount point exists
+	if _, err := os.Stat(mount); err != nil {
+		return fmt.Errorf("mount point does not exist: %w", err)
+	}
+
+	// Check if it's a GlusterFS mount using df -T
+	cmd := exec.CommandContext(ctx, "df", "-T", mount)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to check mount type: %w (output: %s)", err, string(output))
+	}
+
+	// Look for "fuse.glusterfs" in the output
+	if !strings.Contains(string(output), "fuse.glusterfs") {
+		return fmt.Errorf("mount point is not a GlusterFS mount: %s", string(output))
+	}
+
 	return nil
 }
 

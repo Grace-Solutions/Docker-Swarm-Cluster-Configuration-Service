@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"clusterctl/internal/logging"
+	"clusterctl/internal/orchestrator"
+	"clusterctl/internal/ssh"
 	"clusterctl/internal/swarm"
 )
 
@@ -37,13 +39,22 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		return err
 	}
 
-	// Load SSH public key for distribution to nodes
+	// Load SSH keys for distribution to nodes and remote orchestration
 	sshPublicKeyPath := filepath.Join(opts.StateDir, "ssh_key.pub")
 	sshPublicKeyBytes, err := os.ReadFile(sshPublicKeyPath)
 	if err != nil {
 		return fmt.Errorf("failed to read SSH public key from %s: %w (did you run 'master init'?)", sshPublicKeyPath, err)
 	}
 	sshPublicKey := string(sshPublicKeyBytes)
+
+	sshPrivateKeyPath := filepath.Join(opts.StateDir, "ssh_key")
+	sshPrivateKeyBytes, err := os.ReadFile(sshPrivateKeyPath)
+	if err != nil {
+		return fmt.Errorf("failed to read SSH private key from %s: %w (did you run 'master init'?)", sshPrivateKeyPath, err)
+	}
+
+	// Create SSH connection pool for remote orchestration
+	sshPool := ssh.NewPool(sshPrivateKeyBytes, opts.SSHUser)
 
 	ln, err := net.Listen("tcp", opts.ListenAddr)
 	if err != nil {
@@ -59,6 +70,13 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 	log.Infow(fmt.Sprintf("controller listening on %s (stateDir=%s, sshUser=%s)", opts.ListenAddr, opts.StateDir, opts.SSHUser))
 
 	var wg sync.WaitGroup
+
+	// Start background orchestration goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		runOrchestration(ctx, store, sshPool, opts)
+	}()
 
 	// Stop accepting new connections when the context is cancelled.
 	go func() {
@@ -388,5 +406,118 @@ func hasResponseChanged(old, new *NodeResponse) bool {
 	}
 	// Don't compare worker lists as they can change frequently without being meaningful.
 	return false
+}
+
+// runOrchestration is a background goroutine that orchestrates GlusterFS and Swarm setup
+// when all required nodes have registered.
+func runOrchestration(ctx context.Context, store *fileStore, sshPool *ssh.Pool, opts ServeOptions) {
+	log := logging.L().With("component", "orchestrator")
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			state := store.getState()
+
+			// Skip if not waiting for minimum nodes
+			if !opts.WaitForMinimum {
+				continue
+			}
+
+			managers, workers := countRoles(state.Nodes)
+			totalManagers := managers + 1 // +1 for primary master
+
+			// Check if we have minimum nodes
+			if totalManagers < opts.MinManagers || workers < opts.MinWorkers {
+				continue
+			}
+
+			// Phase 1: Orchestrate GlusterFS if enabled and not yet orchestrated
+			if state.GlusterEnabled && !state.GlusterOrchestrated {
+				log.Infow("triggering GlusterFS orchestration")
+
+				// Get all GlusterFS-capable workers
+				glusterWorkers := store.getGlusterWorkers()
+				if len(glusterWorkers) == 0 {
+					log.Warnw("no GlusterFS-capable workers found")
+					continue
+				}
+
+				// Extract hostnames/IPs
+				var workerHosts []string
+				for _, w := range glusterWorkers {
+					if w.IP != "" {
+						workerHosts = append(workerHosts, w.IP)
+					}
+				}
+
+				if len(workerHosts) == 0 {
+					log.Warnw("no workers with valid IPs for GlusterFS")
+					continue
+				}
+
+				// Run GlusterFS orchestration
+				if err := orchestrator.GlusterSetup(ctx, sshPool, workerHosts, state.GlusterVolume, state.GlusterMount, state.GlusterBrick); err != nil {
+					log.Errorw("GlusterFS orchestration failed", "err", err)
+					// Don't mark as orchestrated so we can retry
+					continue
+				}
+
+				// Mark as orchestrated and ready
+				if _, err := store.setGlusterOrchestrated(true); err != nil {
+					log.Errorw("failed to mark GlusterFS as orchestrated", "err", err)
+					continue
+				}
+
+				if _, err := store.setGlusterReady(true); err != nil {
+					log.Errorw("failed to mark GlusterFS as ready", "err", err)
+					continue
+				}
+
+				log.Infow("✅ GlusterFS orchestration completed successfully")
+			}
+
+			// Phase 2: Orchestrate Docker Swarm if not yet orchestrated
+			if !state.SwarmOrchestrated {
+				// Wait for GlusterFS to be ready if enabled
+				if state.GlusterEnabled && !state.GlusterReady {
+					continue
+				}
+
+				log.Infow("triggering Docker Swarm orchestration")
+
+				// Get manager and worker hostnames
+				var managerHosts, workerHosts []string
+				for _, node := range state.Nodes {
+					if node.IP == "" {
+						continue
+					}
+					if node.Role == "manager" {
+						managerHosts = append(managerHosts, node.IP)
+					} else if node.Role == "worker" {
+						workerHosts = append(workerHosts, node.IP)
+					}
+				}
+
+				// Run Swarm orchestration
+				if err := orchestrator.SwarmSetup(ctx, sshPool, opts.AdvertiseAddr, managerHosts, workerHosts, opts.AdvertiseAddr); err != nil {
+					log.Errorw("Docker Swarm orchestration failed", "err", err)
+					// Don't mark as orchestrated so we can retry
+					continue
+				}
+
+				// Mark as orchestrated
+				if _, err := store.setSwarmOrchestrated(true); err != nil {
+					log.Errorw("failed to mark Swarm as orchestrated", "err", err)
+					continue
+				}
+
+				log.Infow("✅ Docker Swarm orchestration completed successfully")
+			}
+		}
+	}
 }
 
