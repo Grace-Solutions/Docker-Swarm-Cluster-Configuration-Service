@@ -139,7 +139,7 @@ func Join(ctx context.Context, opts JoinOptions) error {
 	}
 
 	log.Infow(fmt.Sprintf(
-		"controller response: status=%s swarmRole=%s managerAddr=%s hasJoinToken=%t glusterEnabled=%t glusterVolume=%s glusterMount=%s glusterBrick=%s glusterOrchestrator=%t glusterReady=%t deployPortainer=%t",
+		"controller response: status=%s swarmRole=%s managerAddr=%s hasJoinToken=%t glusterEnabled=%t glusterVolume=%s glusterMount=%s glusterBrick=%s glusterOrchestrator=%t glusterReady=%t deployPortainer=%t hasSSHKey=%t",
 		lastResp.Status,
 		lastResp.SwarmRole,
 		lastResp.SwarmManagerAddr,
@@ -151,7 +151,18 @@ func Join(ctx context.Context, opts JoinOptions) error {
 		lastResp.GlusterOrchestrator,
 		lastResp.GlusterReady,
 		lastResp.DeployPortainer,
+		lastResp.SSHPublicKey != "",
 	))
+
+	// Install SSH public key for remote orchestration
+	if lastResp.SSHPublicKey != "" {
+		if err := installSSHKey(ctx, lastResp.SSHPublicKey); err != nil {
+			log.Warnw("failed to install SSH public key (non-fatal)", "err", err)
+			// Non-fatal; controller can still orchestrate if SSH is already configured
+		} else {
+			log.Infow("SSH public key installed successfully for remote orchestration")
+		}
+	}
 
 	if err := overlay.EnsureConnected(ctx, opts.OverlayProvider, opts.OverlayConfig); err != nil {
 		log.Warnw("overlay convergence failed", "err", err)
@@ -637,5 +648,60 @@ func hasNodeResponseChanged(old, new *controller.NodeResponse) bool {
 		return true
 	}
 	return false
+}
+
+// installSSHKey installs the controller's SSH public key to ~/.ssh/authorized_keys
+// for remote orchestration.
+func installSSHKey(ctx context.Context, publicKey string) error {
+	if publicKey == "" {
+		return errors.New("ssh public key is empty")
+	}
+
+	// Get current user's home directory
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	sshDir := homeDir + "/.ssh"
+	authorizedKeysPath := sshDir + "/authorized_keys"
+
+	// Create .ssh directory if it doesn't exist
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		return fmt.Errorf("failed to create .ssh directory: %w", err)
+	}
+
+	// Read existing authorized_keys file
+	existingKeys := ""
+	if data, err := os.ReadFile(authorizedKeysPath); err == nil {
+		existingKeys = string(data)
+	}
+
+	// Check if key already exists
+	if strings.Contains(existingKeys, strings.TrimSpace(publicKey)) {
+		logging.L().Infow("SSH public key already exists in authorized_keys")
+		return nil
+	}
+
+	// Append the new key
+	f, err := os.OpenFile(authorizedKeysPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to open authorized_keys: %w", err)
+	}
+	defer f.Close()
+
+	// Ensure there's a newline before the key if the file is not empty
+	if existingKeys != "" && !strings.HasSuffix(existingKeys, "\n") {
+		if _, err := f.WriteString("\n"); err != nil {
+			return fmt.Errorf("failed to write newline: %w", err)
+		}
+	}
+
+	if _, err := f.WriteString(strings.TrimSpace(publicKey) + "\n"); err != nil {
+		return fmt.Errorf("failed to write SSH public key: %w", err)
+	}
+
+	logging.L().Infow(fmt.Sprintf("SSH public key added to %s", authorizedKeysPath))
+	return nil
 }
 
