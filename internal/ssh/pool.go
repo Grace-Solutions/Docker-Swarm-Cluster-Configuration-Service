@@ -10,18 +10,16 @@ import (
 
 // Pool manages SSH connections to multiple hosts.
 type Pool struct {
-	privateKey []byte
-	user       string
-	clients    map[string]*Client
-	mu         sync.RWMutex
+	authConfigs map[string]AuthConfig // Per-host authentication configs
+	clients     map[string]*Client
+	mu          sync.RWMutex
 }
 
-// NewPool creates a new SSH connection pool.
-func NewPool(privateKeyPEM []byte, user string) *Pool {
+// NewPool creates a new SSH connection pool with per-host authentication configs.
+func NewPool(authConfigs map[string]AuthConfig) *Pool {
 	return &Pool{
-		privateKey: privateKeyPEM,
-		user:       user,
-		clients:    make(map[string]*Client),
+		authConfigs: authConfigs,
+		clients:     make(map[string]*Client),
 	}
 }
 
@@ -44,7 +42,13 @@ func (p *Pool) Get(ctx context.Context, host string) (*Client, error) {
 		return client, nil
 	}
 
-	client, err := NewClient(ctx, host, p.user, p.privateKey)
+	// Get auth config for this host
+	authConfig, exists := p.authConfigs[host]
+	if !exists {
+		return nil, fmt.Errorf("no authentication config found for host %s", host)
+	}
+
+	client, err := NewClient(ctx, host, authConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ssh client for %s: %w", host, err)
 	}

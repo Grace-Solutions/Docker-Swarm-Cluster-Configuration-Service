@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -17,22 +18,50 @@ type Client struct {
 	host   string
 }
 
-// NewClient creates a new SSH client connection to the specified host.
-// privateKeyPEM is the PEM-encoded private key.
-// user is the SSH username (typically "root").
-func NewClient(ctx context.Context, host string, user string, privateKeyPEM []byte) (*Client, error) {
-	// Parse private key
-	signer, err := ssh.ParsePrivateKey(privateKeyPEM)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse private key: %w", err)
+// AuthConfig contains SSH authentication configuration.
+type AuthConfig struct {
+	Username       string
+	Password       string
+	PrivateKeyPEM  []byte
+	PrivateKeyPath string
+}
+
+// NewClient creates a new SSH client connection to the specified host using the provided authentication.
+func NewClient(ctx context.Context, host string, auth AuthConfig) (*Client, error) {
+	var authMethods []ssh.AuthMethod
+
+	// Try private key authentication first
+	if len(auth.PrivateKeyPEM) > 0 {
+		signer, err := ssh.ParsePrivateKey(auth.PrivateKeyPEM)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse private key: %w", err)
+		}
+		authMethods = append(authMethods, ssh.PublicKeys(signer))
+	} else if auth.PrivateKeyPath != "" {
+		keyData, err := os.ReadFile(auth.PrivateKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read private key from %s: %w", auth.PrivateKeyPath, err)
+		}
+		signer, err := ssh.ParsePrivateKey(keyData)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse private key from %s: %w", auth.PrivateKeyPath, err)
+		}
+		authMethods = append(authMethods, ssh.PublicKeys(signer))
+	}
+
+	// Add password authentication if provided
+	if auth.Password != "" {
+		authMethods = append(authMethods, ssh.Password(auth.Password))
+	}
+
+	if len(authMethods) == 0 {
+		return nil, fmt.Errorf("no authentication method provided (need password or private key)")
 	}
 
 	// Configure SSH client
 	config := &ssh.ClientConfig{
-		User: user,
-		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(signer),
-		},
+		User:            auth.Username,
+		Auth:            authMethods,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // TODO: Consider using known_hosts for production
 		Timeout:         10 * time.Second,
 	}
