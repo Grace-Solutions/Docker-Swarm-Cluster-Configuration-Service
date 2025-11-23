@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"clusterctl/internal/logging"
+	"clusterctl/internal/ssh"
 )
 
 type ServeOptions struct {
@@ -18,6 +19,8 @@ type ServeOptions struct {
 	MinManagers    int
 	MinWorkers     int
 	WaitForMinimum bool
+	SSHUser        string // SSH username for remote orchestration (default: "root")
+	KeepSSHKeys    bool   // Keep SSH keys after successful setup (default: false, opt-out)
 }
 
 type MasterInitOptions struct {
@@ -70,6 +73,7 @@ type NodeResponse struct {
 	GlusterWorkerNodes  []string           `json:"glusterWorkerNodes,omitempty"`
 	GlusterReady        bool               `json:"glusterReady"`
 	DeployPortainer     bool               `json:"deployPortainer"`
+	SSHPublicKey        string             `json:"sshPublicKey,omitempty"` // SSH public key for remote orchestration
 }
 
 // MasterInit prepares a host as the initial Swarm manager and optional GlusterFS brick.
@@ -79,6 +83,7 @@ type NodeResponse struct {
 // nodes as they join.
 //
 // MasterInit clears any existing node registrations to ensure a clean start.
+// It also generates an SSH keypair for remote orchestration.
 func MasterInit(ctx context.Context, opts MasterInitOptions) error {
 	_ = ctx // reserved for potential future orchestration work
 
@@ -95,6 +100,27 @@ func MasterInit(ctx context.Context, opts MasterInitOptions) error {
 	if _, err := store.reset(); err != nil {
 		return err
 	}
+
+	// Generate SSH keypair for remote orchestration
+	logging.L().Infow("generating SSH keypair for remote orchestration")
+	keypair, err := ssh.GenerateKeyPair()
+	if err != nil {
+		return fmt.Errorf("failed to generate SSH keypair: %w", err)
+	}
+
+	// Save SSH keys to state directory
+	privateKeyPath := filepath.Join(opts.StateDir, "ssh_key")
+	publicKeyPath := filepath.Join(opts.StateDir, "ssh_key.pub")
+
+	if err := os.WriteFile(privateKeyPath, keypair.PrivateKey, 0600); err != nil {
+		return fmt.Errorf("failed to write SSH private key: %w", err)
+	}
+
+	if err := os.WriteFile(publicKeyPath, keypair.PublicKey, 0644); err != nil {
+		return fmt.Errorf("failed to write SSH public key: %w", err)
+	}
+
+	logging.L().Infow(fmt.Sprintf("SSH keypair generated: %s, %s", privateKeyPath, publicKeyPath))
 
 	if opts.EnableGluster {
 		volume, mount, brick := deriveGlusterDefaults(opts.StateDir)

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -25,10 +27,23 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		return errors.New("controller: listen address must be set")
 	}
 
+	// Set default SSH user if not specified
+	if opts.SSHUser == "" {
+		opts.SSHUser = "root"
+	}
+
 	store, err := newFileStore(opts.StateDir)
 	if err != nil {
 		return err
 	}
+
+	// Load SSH public key for distribution to nodes
+	sshPublicKeyPath := filepath.Join(opts.StateDir, "ssh_key.pub")
+	sshPublicKeyBytes, err := os.ReadFile(sshPublicKeyPath)
+	if err != nil {
+		return fmt.Errorf("failed to read SSH public key from %s: %w (did you run 'master init'?)", sshPublicKeyPath, err)
+	}
+	sshPublicKey := string(sshPublicKeyBytes)
 
 	ln, err := net.Listen("tcp", opts.ListenAddr)
 	if err != nil {
@@ -41,7 +56,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		"listen", opts.ListenAddr,
 		"stateDir", opts.StateDir,
 	)
-	log.Infow(fmt.Sprintf("controller listening on %s (stateDir=%s)", opts.ListenAddr, opts.StateDir))
+	log.Infow(fmt.Sprintf("controller listening on %s (stateDir=%s, sshUser=%s)", opts.ListenAddr, opts.StateDir, opts.SSHUser))
 
 	var wg sync.WaitGroup
 
@@ -69,7 +84,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		go func(c net.Conn) {
 			defer wg.Done()
 			defer c.Close()
-			if err := handleConn(ctx, c, store, opts); err != nil {
+			if err := handleConn(ctx, c, store, opts, sshPublicKey); err != nil {
 				log.Warnw(fmt.Sprintf("connection handler error from %s: %v", c.RemoteAddr().String(), err))
 			}
 		}(conn)
@@ -80,7 +95,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 	return nil
 }
 
-func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts ServeOptions) error {
+func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts ServeOptions, sshPublicKey string) error {
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 
 	// Wrap the connection in a buffered reader so we can safely peek at the first
@@ -157,6 +172,7 @@ func handleConn(ctx context.Context, conn net.Conn, store *fileStore, opts Serve
 	resp := NodeResponse{
 		SwarmManagerAddr: swarmManagerAddr,
 		SwarmRole:        reg.Role,
+		SSHPublicKey:     sshPublicKey, // Send SSH public key to node for remote orchestration
 	}
 
 	if action == "deregister" {
