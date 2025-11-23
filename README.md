@@ -1,10 +1,82 @@
 # Docker Swarm Cluster Configuration Service
 
 `clusterctl` is a Go-based orchestrator that automates Docker Swarm
-initialisation, node joins, overlay networking, and GlusterFS integration.
+initialization, node joins, overlay networking, and GlusterFS integration.
 
-The project is designed around a **single binary** (`clusterctl`) plus
-optional convenience wrapper scripts for Linux.
+The project is designed around a **single binary** (`clusterctl`) that supports
+two deployment modes:
+
+1. **Server-Initiated Deployment (Recommended)** - Deploy from a JSON configuration file
+2. **Legacy Node-Agent Mode** - Nodes register with a controller server
+
+## Quick Start (Server-Initiated Deployment)
+
+The recommended way to deploy a cluster is using the `deploy` command with a JSON configuration file:
+
+```bash
+# 1. Create a configuration file (see clusterctl.json.example)
+cp clusterctl.json.example clusterctl.json
+
+# 2. Edit the configuration with your nodes and credentials
+nano clusterctl.json
+
+# 3. Deploy the cluster
+./clusterctl deploy --config clusterctl.json
+```
+
+This will:
+- ✅ Install Docker and GlusterFS on all nodes via SSH
+- ✅ Configure overlay network (Netbird/Tailscale/WireGuard)
+- ✅ Setup GlusterFS with replication and failover
+- ✅ Initialize Docker Swarm with managers and workers
+- ✅ Deploy Portainer (optional)
+
+### Configuration File Format
+
+See `clusterctl.json.example` for a complete example. Key sections:
+
+```json
+{
+  "globalSettings": {
+    "clusterName": "production-swarm",
+    "overlayProvider": "netbird",
+    "sshUser": "root",
+    "glusterVolume": "docker-swarm-0001",
+    "glusterMount": "/mnt/GlusterFS/Docker/Swarm/0001/data",
+    "glusterBrick": "/mnt/GlusterFS/Docker/Swarm/0001/brick",
+    "deployPortainer": true
+  },
+  "nodes": [
+    {
+      "hostname": "manager1.example.com",
+      "username": "root",
+      "privateKeyPath": "/root/.ssh/id_ed25519",
+      "primaryMaster": true,
+      "role": "manager",
+      "glusterEnabled": false
+    },
+    {
+      "hostname": "worker1.example.com",
+      "username": "root",
+      "password": "your-password",
+      "role": "worker",
+      "glusterEnabled": true
+    }
+  ]
+}
+```
+
+**Authentication Options:**
+- `privateKeyPath`: Path to SSH private key (recommended)
+- `password`: SSH password (alternative to private key)
+
+**Node Roles:**
+- `manager`: Docker Swarm manager node
+- `worker`: Docker Swarm worker node
+
+**GlusterFS:**
+- Set `glusterEnabled: true` on workers to create GlusterFS bricks
+- Managers will mount the GlusterFS volume (read-write)
 
 ## Features
 
@@ -26,7 +98,9 @@ optional convenience wrapper scripts for Linux.
   - Netbird, Tailscale, WireGuard tools.
   - GlusterFS client utilities.
 
-## Quickstart (primary master on Linux)
+## Legacy Mode: Node-Agent Deployment
+
+**Note:** This mode is deprecated. Use the `deploy` command with JSON config instead.
 
 On a fresh Linux host that can reach your Netbird/Tailscale/WireGuard network,
 you can get to the binaries and start the primary master controller with
