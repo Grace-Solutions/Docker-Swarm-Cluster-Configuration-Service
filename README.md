@@ -33,50 +33,107 @@ This will:
 
 ### Configuration File Format
 
-See `clusterctl.json.example` for a complete example. Key sections:
+See `clusterctl.json.example` for a complete example. The configuration has two main sections:
+
+#### Global Settings
 
 ```json
 {
   "globalSettings": {
     "clusterName": "production-swarm",
     "overlayProvider": "netbird",
-    "sshUser": "root",
     "glusterVolume": "docker-swarm-0001",
     "glusterMount": "/mnt/GlusterFS/Docker/Swarm/0001/data",
     "glusterBrick": "/mnt/GlusterFS/Docker/Swarm/0001/brick",
-    "deployPortainer": true
-  },
+    "deployPortainer": true,
+    "portainerPassword": ""
+  }
+}
+```
+
+- `clusterName`: Name of the Docker Swarm cluster (required)
+- `overlayProvider`: Default overlay network provider: `netbird`, `tailscale`, `wireguard`, or `none` (default: `none`)
+- `glusterVolume`: GlusterFS volume name (default: `docker-swarm-0001`)
+- `glusterMount`: Default mount path for GlusterFS (default: `/mnt/GlusterFS/Docker/Swarm/0001/data`)
+- `glusterBrick`: Default brick path for GlusterFS (default: `/mnt/GlusterFS/Docker/Swarm/0001/brick`)
+- `deployPortainer`: Deploy Portainer web UI (default: `true`)
+- `portainerPassword`: Portainer admin password (default: auto-generated)
+
+#### Per-Node Configuration
+
+Each node supports extensive per-node configuration with overrides:
+
+```json
+{
   "nodes": [
     {
       "hostname": "manager1.example.com",
       "username": "root",
+      "password": "",
       "privateKeyPath": "/root/.ssh/id_ed25519",
+      "sshPort": 22,
       "primaryMaster": true,
       "role": "manager",
-      "glusterEnabled": false
+      "overlayProvider": "",
+      "overlayConfig": "your-netbird-setup-key-here",
+      "glusterEnabled": false,
+      "glusterMount": "",
+      "glusterBrick": "",
+      "advertiseAddr": ""
     },
     {
       "hostname": "worker1.example.com",
-      "username": "root",
+      "username": "admin",
       "password": "your-password",
+      "sshPort": 2222,
       "role": "worker",
+      "overlayProvider": "tailscale",
+      "overlayConfig": "your-tailscale-auth-key-here",
       "glusterEnabled": true
     }
   ]
 }
 ```
 
-**Authentication Options:**
-- `privateKeyPath`: Path to SSH private key (recommended)
-- `password`: SSH password (alternative to private key)
+**SSH Connection Settings:**
+- `hostname`: Hostname or IP address (required)
+- `username`: SSH username (default: `root`)
+- `password`: SSH password (use this OR `privateKeyPath`)
+- `privateKeyPath`: Path to SSH private key (use this OR `password`)
+- `sshPort`: SSH port (default: `22`)
 
-**Node Roles:**
-- `manager`: Docker Swarm manager node
-- `worker`: Docker Swarm worker node
+**Node Role Settings:**
+- `primaryMaster`: Mark as primary master (exactly one required, must be a manager)
+- `role`: `manager` or `worker` (required)
 
-**GlusterFS:**
-- Set `glusterEnabled: true` on workers to create GlusterFS bricks
-- Managers will mount the GlusterFS volume (read-write)
+**Overlay Network Settings (per-node overrides):**
+- `overlayProvider`: Override global overlay provider for this node
+- `overlayConfig`: Provider-specific config:
+  - **Netbird**: Setup key (e.g., `NB_SETUP_KEY`)
+  - **Tailscale**: Auth key (e.g., `TS_AUTHKEY`)
+  - **WireGuard**: Interface name or config path (e.g., `wg0` or `/etc/wireguard/wg0.conf`)
+
+**GlusterFS Settings (per-node overrides):**
+- `glusterEnabled`: Enable GlusterFS on this node (workers only)
+- `glusterMount`: Override global mount path for this node
+- `glusterBrick`: Override global brick path for this node
+
+**Docker Swarm Settings:**
+- `advertiseAddr`: Override auto-detected advertise address for Swarm
+
+### SSH Multi-Session Support
+
+The deployer uses **parallel SSH sessions** for maximum performance:
+- All nodes are configured **simultaneously** using goroutines
+- Each node gets its own SSH connection from the pool
+- Operations like dependency installation, overlay setup, and GlusterFS configuration run in parallel
+- This dramatically reduces deployment time for large clusters
+
+The SSH pool (`internal/ssh/pool.go`) manages connections efficiently:
+- Connections are created on-demand and reused
+- Each host can have different authentication credentials
+- Thread-safe with mutex protection
+- `RunAll()` method executes commands on multiple hosts in parallel
 
 ## Features
 
