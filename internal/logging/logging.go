@@ -97,24 +97,45 @@ func (l *simpleLogger) log(lvl level, name, msg string) {
 	}
 }
 
-// Debugw logs a debug message. Extra key/value pairs are ignored.
-func (l *simpleLogger) Debugw(msg string, _ ...interface{}) {
-	l.log(levelDebug, "DEBUG", msg)
+// Debugw logs a debug message. Key/value pairs are formatted inline.
+func (l *simpleLogger) Debugw(msg string, keysAndValues ...interface{}) {
+	l.log(levelDebug, "DEBUG", formatMessage(msg, keysAndValues...))
 }
 
-// Infow logs an info message. Extra key/value pairs are ignored.
-func (l *simpleLogger) Infow(msg string, _ ...interface{}) {
-	l.log(levelInfo, "INFO", msg)
+// Infow logs an info message. Key/value pairs are formatted inline.
+func (l *simpleLogger) Infow(msg string, keysAndValues ...interface{}) {
+	l.log(levelInfo, "INFO", formatMessage(msg, keysAndValues...))
 }
 
-// Warnw logs a warning message. Extra key/value pairs are ignored.
-func (l *simpleLogger) Warnw(msg string, _ ...interface{}) {
-	l.log(levelWarn, "WARN", msg)
+// Warnw logs a warning message. Key/value pairs are formatted inline.
+func (l *simpleLogger) Warnw(msg string, keysAndValues ...interface{}) {
+	l.log(levelWarn, "WARN", formatMessage(msg, keysAndValues...))
 }
 
-// Errorw logs an error message. Extra key/value pairs are ignored.
-func (l *simpleLogger) Errorw(msg string, _ ...interface{}) {
-	l.log(levelError, "ERROR", msg)
+// Errorw logs an error message. Key/value pairs are formatted inline.
+func (l *simpleLogger) Errorw(msg string, keysAndValues ...interface{}) {
+	l.log(levelError, "ERROR", formatMessage(msg, keysAndValues...))
+}
+
+// formatMessage formats a message with key/value pairs inline.
+func formatMessage(msg string, keysAndValues ...interface{}) string {
+	if len(keysAndValues) == 0 {
+		return msg
+	}
+
+	var parts []string
+	for i := 0; i < len(keysAndValues); i += 2 {
+		if i+1 < len(keysAndValues) {
+			key := fmt.Sprintf("%v", keysAndValues[i])
+			value := fmt.Sprintf("%v", keysAndValues[i+1])
+			parts = append(parts, fmt.Sprintf("%s=%s", key, value))
+		}
+	}
+
+	if len(parts) > 0 {
+		return fmt.Sprintf("%s %s", msg, strings.Join(parts, " "))
+	}
+	return msg
 }
 
 // With returns the same logger; key/value context is ignored to keep output
