@@ -33,7 +33,7 @@ type GlobalSettings struct {
 	PortainerPassword        string         `json:"portainerPassword"`        // Portainer admin password (default: auto-generated)
 	PreScripts               []ScriptConfig `json:"preScripts"`               // Scripts to execute before deployment
 	PostScripts              []ScriptConfig `json:"postScripts"`              // Scripts to execute after deployment
-	RemoveSSHKeysOnCompletion bool          `json:"removeSSHKeysOnCompletion"` // Remove SSH keys after deployment (default: false)
+	RemoveSSHPublicKey       bool           `json:"removeSSHPublicKey"`       // Remove SSH public key from nodes after deployment (default: false)
 }
 
 // NodeConfig represents a single node's configuration.

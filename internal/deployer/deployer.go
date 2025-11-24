@@ -118,23 +118,17 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 	}
 	log.Infow("✅ Reboot initiated for configured nodes")
 
-	// Phase 12: Remove SSH keys if configured
-	if cfg.GlobalSettings.RemoveSSHKeysOnCompletion {
-		log.Infow("Phase 12: Removing SSH keys from nodes")
-		if err := removeSSHKeysFromNodes(ctx, cfg, sshPool, keyPair); err != nil {
-			log.Warnw("failed to remove SSH keys from nodes", "error", err)
+	// Phase 12: Remove SSH public key from nodes if configured
+	if cfg.GlobalSettings.RemoveSSHPublicKey {
+		log.Infow("Phase 12: Removing SSH public key from nodes")
+		if err := removeSSHPublicKeyFromNodes(ctx, cfg, sshPool, keyPair); err != nil {
+			log.Warnw("failed to remove SSH public key from nodes", "error", err)
 		} else {
-			log.Infow("✅ SSH keys removed from nodes")
+			log.Infow("✅ SSH public key removed from nodes")
 		}
-
-		// Remove local SSH key pair
-		if err := sshkeys.RemoveKeyPair(""); err != nil {
-			log.Warnw("failed to remove local SSH key pair", "error", err)
-		} else {
-			log.Infow("✅ Local SSH key pair removed")
-		}
+		log.Infow("ℹ️  Local SSH key pair kept in sshkeys/ directory for future use")
 	} else {
-		log.Infow("Phase 12: Skipping SSH key removal (removeSSHKeysOnCompletion=false)")
+		log.Infow("Phase 12: Skipping SSH public key removal (removeSSHPublicKey=false)")
 	}
 
 	log.Infow("🎉 Cluster deployment complete!")
@@ -735,8 +729,8 @@ func applyNodeLabels(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool,
 	return nil
 }
 
-// removeSSHKeysFromNodes removes the automatic SSH public key from all nodes.
-func removeSSHKeysFromNodes(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool, keyPair *sshkeys.KeyPair) error {
+// removeSSHPublicKeyFromNodes removes the automatic SSH public key from all nodes.
+func removeSSHPublicKeyFromNodes(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool, keyPair *sshkeys.KeyPair) error {
 	if keyPair == nil {
 		return nil // No key pair to remove
 	}

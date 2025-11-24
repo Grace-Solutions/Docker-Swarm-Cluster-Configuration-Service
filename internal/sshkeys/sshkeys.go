@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"time"
 
 	"clusterctl/internal/logging"
 	"golang.org/x/crypto/ssh"
@@ -16,9 +18,9 @@ const (
 	// DefaultKeyDir is the default directory for SSH keys (relative to binary)
 	DefaultKeyDir = "sshkeys"
 	// PrivateKeyFileName is the name of the private key file
-	PrivateKeyFileName = "clusterctl_ed25519"
+	PrivateKeyFileName = "PrivateKey"
 	// PublicKeyFileName is the name of the public key file
-	PublicKeyFileName = "clusterctl_ed25519.pub"
+	PublicKeyFileName = "PublicKey"
 )
 
 // KeyPair represents an SSH key pair.
@@ -26,6 +28,39 @@ type KeyPair struct {
 	PrivateKeyPath string
 	PublicKeyPath  string
 	PublicKey      string // OpenSSH format public key
+}
+
+// getLatestKeyFolder returns the latest key folder based on modified date descending.
+// Returns empty string if no folders exist.
+func getLatestKeyFolder(baseDir string) (string, error) {
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to read key directory: %w", err)
+	}
+
+	// Filter for directories only
+	var folders []os.DirEntry
+	for _, entry := range entries {
+		if entry.IsDir() {
+			folders = append(folders, entry)
+		}
+	}
+
+	if len(folders) == 0 {
+		return "", nil
+	}
+
+	// Sort by modified time descending
+	sort.Slice(folders, func(i, j int) bool {
+		infoI, _ := folders[i].Info()
+		infoJ, _ := folders[j].Info()
+		return infoI.ModTime().After(infoJ.ModTime())
+	})
+
+	return filepath.Join(baseDir, folders[0].Name()), nil
 }
 
 // EnsureKeyPair ensures an SSH key pair exists, generating it if necessary.
@@ -44,32 +79,50 @@ func EnsureKeyPair(keyDir string) (*KeyPair, error) {
 		keyDir = filepath.Join(binaryDir, DefaultKeyDir)
 	}
 
-	// Ensure key directory exists
+	// Ensure base key directory exists
 	if err := os.MkdirAll(keyDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create key directory: %w", err)
 	}
 
-	privateKeyPath := filepath.Join(keyDir, PrivateKeyFileName)
-	publicKeyPath := filepath.Join(keyDir, PublicKeyFileName)
-
-	// Check if key pair already exists
-	if _, err := os.Stat(privateKeyPath); err == nil {
-		log.Infow("SSH key pair already exists", "path", privateKeyPath)
-		
-		// Read public key
-		publicKeyBytes, err := os.ReadFile(publicKeyPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read public key: %w", err)
-		}
-
-		return &KeyPair{
-			PrivateKeyPath: privateKeyPath,
-			PublicKeyPath:  publicKeyPath,
-			PublicKey:      string(publicKeyBytes),
-		}, nil
+	// Check for latest existing key folder
+	latestFolder, err := getLatestKeyFolder(keyDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get latest key folder: %w", err)
 	}
 
-	// Generate new key pair
+	if latestFolder != "" {
+		// Use existing key pair from latest folder
+		privateKeyPath := filepath.Join(latestFolder, PrivateKeyFileName)
+		publicKeyPath := filepath.Join(latestFolder, PublicKeyFileName)
+
+		if _, err := os.Stat(privateKeyPath); err == nil {
+			log.Infow("using existing SSH key pair", "path", privateKeyPath)
+
+			// Read public key
+			publicKeyBytes, err := os.ReadFile(publicKeyPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read public key: %w", err)
+			}
+
+			return &KeyPair{
+				PrivateKeyPath: privateKeyPath,
+				PublicKeyPath:  publicKeyPath,
+				PublicKey:      string(publicKeyBytes),
+			}, nil
+		}
+	}
+
+	// Generate new key pair in timestamped folder
+	timestamp := time.Now().Format("2006.01.02.1504")
+	timestampedDir := filepath.Join(keyDir, timestamp)
+
+	if err := os.MkdirAll(timestampedDir, 0700); err != nil {
+		return nil, fmt.Errorf("failed to create timestamped key directory: %w", err)
+	}
+
+	privateKeyPath := filepath.Join(timestampedDir, PrivateKeyFileName)
+	publicKeyPath := filepath.Join(timestampedDir, PublicKeyFileName)
+
 	log.Infow("generating new SSH key pair", "path", privateKeyPath)
 	
 	// Generate ED25519 key pair
@@ -127,33 +180,6 @@ func marshalED25519PrivateKey(key ed25519.PrivateKey) []byte {
 	return []byte(key)
 }
 
-// RemoveKeyPair removes the SSH key pair from disk.
-func RemoveKeyPair(keyDir string) error {
-	log := logging.L().With("component", "sshkeys")
-
-	if keyDir == "" {
-		exePath, err := os.Executable()
-		if err != nil {
-			return fmt.Errorf("failed to get executable path: %w", err)
-		}
-		binaryDir := filepath.Dir(exePath)
-		keyDir = filepath.Join(binaryDir, DefaultKeyDir)
-	}
-
-	privateKeyPath := filepath.Join(keyDir, PrivateKeyFileName)
-	publicKeyPath := filepath.Join(keyDir, PublicKeyFileName)
-
-	// Remove private key
-	if err := os.Remove(privateKeyPath); err != nil && !os.IsNotExist(err) {
-		log.Warnw("failed to remove private key", "error", err)
-	}
-
-	// Remove public key
-	if err := os.Remove(publicKeyPath); err != nil && !os.IsNotExist(err) {
-		log.Warnw("failed to remove public key", "error", err)
-	}
-
-	log.Infow("SSH key pair removed", "dir", keyDir)
-	return nil
-}
+// Note: We no longer remove key pairs from disk.
+// Keys are kept in timestamped folders for future use.
 

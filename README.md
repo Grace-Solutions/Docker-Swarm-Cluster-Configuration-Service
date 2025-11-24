@@ -72,7 +72,7 @@ See `clusterctl.json.example` for a complete example. The configuration has two 
     "glusterBrick": "/mnt/GlusterFS/Docker/Swarm/0001/brick",
     "deployPortainer": true,
     "portainerPassword": "",
-    "removeSSHKeysOnCompletion": false,
+    "removeSSHPublicKey": false,
     "preScripts": [
       {
         "enabled": true,
@@ -105,10 +105,11 @@ See `clusterctl.json.example` for a complete example. The configuration has two 
 - `glusterBrick`: Default brick path for GlusterFS (default: `/mnt/GlusterFS/Docker/Swarm/0001/brick`)
 - `deployPortainer`: Deploy Portainer web UI (default: `true`)
 - `portainerPassword`: Portainer admin password (default: auto-generated)
-- `removeSSHKeysOnCompletion`: Remove automatically generated SSH keys from nodes after deployment (default: `false`)
+- `removeSSHPublicKey`: Remove SSH public key from nodes after deployment (default: `false`)
   - **Note**: Only affects nodes using `useSSHAutomaticKeyPair=true`
-  - When `false` (default): SSH keys remain installed for future deployments
-  - When `true`: SSH keys are removed from nodes and local key pair is deleted
+  - When `false` (default): SSH public key remains installed on nodes for future deployments
+  - When `true`: SSH public key is removed from nodes' `~/.ssh/authorized_keys`
+  - **Important**: Local private key is always kept in timestamped folders for future use
 - `preScripts`: Array of scripts to execute **before** deployment on all nodes
 - `postScripts`: Array of scripts to execute **after** deployment on all nodes
 
@@ -129,13 +130,13 @@ Each node supports extensive per-node configuration with overrides:
   "nodes": [
     {
       "hostname": "manager1.example.com",
+      "newHostname": "swarm-manager-01",
       "username": "root",
       "password": "",
       "privateKeyPath": "",
       "useSSHAutomaticKeyPair": true,
       "sshPort": 22,
       "role": "manager",
-      "newHostname": "swarm-manager-01",
       "rebootOnCompletion": false,
       "glusterEnabled": false,
       "glusterMount": "",
@@ -149,18 +150,18 @@ Each node supports extensive per-node configuration with overrides:
     },
     {
       "hostname": "worker1.example.com",
+      "newHostname": "swarm-worker-01",
       "username": "admin",
       "password": "your-password",
       "useSSHAutomaticKeyPair": false,
       "sshPort": 2222,
       "role": "worker",
-      "newHostname": "swarm-worker-01",
       "rebootOnCompletion": true,
       "glusterEnabled": true,
       "scriptsEnabled": true,
       "labels": {
         "environment": "production",
-        "storage": "ssd"
+        "gpu": "nvidia-a100"
       }
     }
   ]
@@ -176,7 +177,9 @@ Each node supports extensive per-node configuration with overrides:
   - When `true`: Uses auto-generated key from `sshkeys/` directory (generated once, reused across deployments)
   - When `false`: Connects with `password` or `privateKeyPath` and installs the auto-generated public key for future use
   - **Note**: Key pair is only generated if it doesn't already exist
-  - **Location**: `sshkeys/clusterctl_ed25519` (private) and `sshkeys/clusterctl_ed25519.pub` (public) next to binary
+  - **Location**: `sshkeys/yyyy.MM.dd.HHmm/PrivateKey` and `sshkeys/yyyy.MM.dd.HHmm/PublicKey` next to binary
+  - **Reuse**: Uses latest folder based on modified date descending
+  - **Persistence**: Keys are never deleted from disk, always kept for future deployments
 - `sshPort`: SSH port per node (default: `22`)
 
 **Node Role Settings:**

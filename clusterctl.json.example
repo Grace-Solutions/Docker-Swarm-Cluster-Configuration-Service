@@ -8,7 +8,7 @@
     "glusterBrick": "/mnt/GlusterFS/Docker/Swarm/0001/brick",
     "deployPortainer": true,
     "portainerPassword": "",
-    "removeSSHKeysOnCompletion": false,
+    "removeSSHPublicKey": false,
     "preScripts": [
       {
         "enabled": true,
@@ -29,13 +29,13 @@
   "nodes": [
     {
       "hostname": "manager1.example.com",
+      "newHostname": "swarm-manager-01",
       "username": "root",
       "password": "",
       "privateKeyPath": "",
       "useSSHAutomaticKeyPair": true,
       "sshPort": 22,
       "role": "manager",
-      "newHostname": "swarm-manager-01",
       "rebootOnCompletion": false,
       "glusterEnabled": false,
       "glusterMount": "",
@@ -51,13 +51,13 @@
     },
     {
       "hostname": "manager2.example.com",
+      "newHostname": "swarm-manager-02",
       "username": "root",
       "password": "",
       "privateKeyPath": "",
       "useSSHAutomaticKeyPair": true,
       "sshPort": 22,
       "role": "manager",
-      "newHostname": "swarm-manager-02",
       "rebootOnCompletion": false,
       "glusterEnabled": false,
       "glusterMount": "",
@@ -73,13 +73,13 @@
     },
     {
       "hostname": "manager3.example.com",
+      "newHostname": "swarm-manager-03",
       "username": "root",
       "password": "",
       "privateKeyPath": "",
       "useSSHAutomaticKeyPair": true,
       "sshPort": 22,
       "role": "manager",
-      "newHostname": "swarm-manager-03",
       "rebootOnCompletion": false,
       "glusterEnabled": false,
       "glusterMount": "",
@@ -95,13 +95,13 @@
     },
     {
       "hostname": "worker1.example.com",
+      "newHostname": "swarm-worker-01",
       "username": "root",
       "password": "your-password-here",
       "privateKeyPath": "",
       "useSSHAutomaticKeyPair": false,
       "sshPort": 22,
       "role": "worker",
-      "newHostname": "swarm-worker-01",
       "rebootOnCompletion": false,
       "glusterEnabled": true,
       "glusterMount": "",
@@ -112,19 +112,18 @@
         "environment": "production",
         "customer": "acme-corp",
         "isVPS": "true",
-        "vpsProvider": "LiquidWeb",
-        "storage": "ssd"
+        "vpsProvider": "LiquidWeb"
       }
     },
     {
       "hostname": "worker2.example.com",
+      "newHostname": "swarm-worker-02",
       "username": "root",
       "password": "",
       "privateKeyPath": "",
       "useSSHAutomaticKeyPair": true,
       "sshPort": 22,
       "role": "worker",
-      "newHostname": "swarm-worker-02",
       "rebootOnCompletion": false,
       "glusterEnabled": true,
       "glusterMount": "",
@@ -135,19 +134,18 @@
         "environment": "production",
         "customer": "acme-corp",
         "isVPS": "true",
-        "vpsProvider": "LiquidWeb",
-        "storage": "ssd"
+        "vpsProvider": "LiquidWeb"
       }
     },
     {
       "hostname": "worker3.example.com",
+      "newHostname": "swarm-worker-03",
       "username": "root",
       "password": "",
       "privateKeyPath": "",
       "useSSHAutomaticKeyPair": true,
       "sshPort": 22,
       "role": "worker",
-      "newHostname": "swarm-worker-03",
       "rebootOnCompletion": false,
       "glusterEnabled": true,
       "glusterMount": "",
@@ -158,19 +156,18 @@
         "environment": "production",
         "customer": "acme-corp",
         "isVPS": "true",
-        "vpsProvider": "RackNerd",
-        "storage": "nvme"
+        "vpsProvider": "RackNerd"
       }
     },
     {
       "hostname": "worker4.example.com",
+      "newHostname": "swarm-worker-04",
       "username": "admin",
       "password": "",
       "privateKeyPath": "",
       "useSSHAutomaticKeyPair": true,
       "sshPort": 2222,
       "role": "worker",
-      "newHostname": "swarm-worker-04",
       "rebootOnCompletion": false,
       "glusterEnabled": true,
       "glusterMount": "",
@@ -181,19 +178,18 @@
         "environment": "production",
         "customer": "acme-corp",
         "isVPS": "true",
-        "vpsProvider": "LiquidWeb",
-        "storage": "hdd"
+        "vpsProvider": "LiquidWeb"
       }
     },
     {
       "hostname": "worker5.example.com",
+      "newHostname": "swarm-worker-05",
       "username": "root",
       "password": "",
       "privateKeyPath": "",
       "useSSHAutomaticKeyPair": true,
       "sshPort": 22,
       "role": "worker",
-      "newHostname": "swarm-worker-05",
       "rebootOnCompletion": false,
       "glusterEnabled": true,
       "glusterMount": "",
@@ -210,13 +206,13 @@
     },
     {
       "hostname": "worker6.example.com",
+      "newHostname": "swarm-worker-06",
       "username": "root",
       "password": "",
       "privateKeyPath": "",
       "useSSHAutomaticKeyPair": true,
       "sshPort": 22,
       "role": "worker",
-      "newHostname": "swarm-worker-06",
       "rebootOnCompletion": true,
       "glusterEnabled": true,
       "glusterMount": "",
