@@ -73,8 +73,8 @@ Services are deployed in **alphabetical order by filename**. Use numeric prefixe
 
 Services should use the pre-created overlay networks:
 
-- **DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION**: Internal cluster communication (subnet: 172.17.0.0/24)
-- **DOCKER-SWARM-CLUSTER-EXTERNAL-INGRESS**: External-facing services (subnet: 172.17.1.0/24)
+- **DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION**: Internal cluster communication (subnet: 172.17.16.0/20)
+- **DOCKER-SWARM-CLUSTER-EXTERNAL-INGRESS**: External-facing services (subnet: 172.17.32.0/20)
 
 Example:
 ```yaml

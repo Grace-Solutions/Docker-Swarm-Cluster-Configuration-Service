@@ -218,8 +218,8 @@ func EnsureOverlayNetwork(ctx context.Context, spec NetworkSpec) error {
 func EnsureDefaultNetworks(ctx context.Context) error {
 	internal := NetworkSpec{
 		Name:    DefaultInternalNetworkName,
-		Subnet:  "172.17.0.0/24",
-		Gateway: "172.17.0.1",
+		Subnet:  "172.17.16.0/20",
+		Gateway: "172.17.16.1",
 	}
 	if err := EnsureOverlayNetwork(ctx, internal); err != nil {
 		return err
@@ -227,8 +227,8 @@ func EnsureDefaultNetworks(ctx context.Context) error {
 
 	external := NetworkSpec{
 		Name:    DefaultExternalNetworkName,
-		Subnet:  "172.17.1.0/24",
-		Gateway: "172.17.1.1",
+		Subnet:  "172.17.32.0/20",
+		Gateway: "172.17.32.1",
 	}
 	if err := EnsureOverlayNetwork(ctx, external); err != nil {
 		return err
