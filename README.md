@@ -42,22 +42,54 @@ See `clusterctl.json.example` for a complete example. The configuration has two 
   "globalSettings": {
     "clusterName": "production-swarm",
     "overlayProvider": "netbird",
+    "overlayConfig": "your-netbird-setup-key-here",
     "glusterVolume": "docker-swarm-0001",
     "glusterMount": "/mnt/GlusterFS/Docker/Swarm/0001/data",
     "glusterBrick": "/mnt/GlusterFS/Docker/Swarm/0001/brick",
     "deployPortainer": true,
-    "portainerPassword": ""
+    "portainerPassword": "",
+    "preScripts": [
+      {
+        "enabled": true,
+        "name": "pre-deployment-check",
+        "source": "https://example.com/scripts/pre-check.sh",
+        "parameters": "--verbose"
+      }
+    ],
+    "postScripts": [
+      {
+        "enabled": true,
+        "name": "post-deployment-validation",
+        "source": "https://example.com/scripts/post-validate.sh",
+        "parameters": ""
+      }
+    ]
   }
 }
 ```
 
 - `clusterName`: Name of the Docker Swarm cluster (required)
-- `overlayProvider`: Default overlay network provider: `netbird`, `tailscale`, `wireguard`, or `none` (default: `none`)
+- `overlayProvider`: **Global** overlay network provider: `netbird`, `tailscale`, `wireguard`, or `none` (default: `none`)
+  - **Note**: All nodes must use the same overlay provider as they need to communicate in the same network
+- `overlayConfig`: Provider-specific configuration (applies to all nodes):
+  - **Netbird**: Setup key (e.g., `NB_SETUP_KEY`)
+  - **Tailscale**: Auth key (e.g., `TS_AUTHKEY`)
+  - **WireGuard**: Interface name or config path (e.g., `wg0` or `/etc/wireguard/wg0.conf`)
 - `glusterVolume`: GlusterFS volume name (default: `docker-swarm-0001`)
 - `glusterMount`: Default mount path for GlusterFS (default: `/mnt/GlusterFS/Docker/Swarm/0001/data`)
 - `glusterBrick`: Default brick path for GlusterFS (default: `/mnt/GlusterFS/Docker/Swarm/0001/brick`)
 - `deployPortainer`: Deploy Portainer web UI (default: `true`)
 - `portainerPassword`: Portainer admin password (default: auto-generated)
+- `preScripts`: Array of scripts to execute **before** deployment on all nodes
+- `postScripts`: Array of scripts to execute **after** deployment on all nodes
+
+**Script Configuration:**
+- `enabled`: Enable/disable this script (default: `true`)
+- `name`: Script name/description
+- `source`: Script source - can be:
+  - **HTTP/HTTPS URL**: Downloaded and executed (e.g., `https://example.com/script.sh`)
+  - **Local path**: Transferred via SSH and executed (not yet implemented)
+- `parameters`: Command-line parameters to pass to the script
 
 #### Per-Node Configuration
 
@@ -74,12 +106,13 @@ Each node supports extensive per-node configuration with overrides:
       "sshPort": 22,
       "primaryMaster": true,
       "role": "manager",
-      "overlayProvider": "",
-      "overlayConfig": "your-netbird-setup-key-here",
+      "newHostname": "swarm-manager-01",
+      "rebootOnCompletion": false,
       "glusterEnabled": false,
       "glusterMount": "",
       "glusterBrick": "",
-      "advertiseAddr": ""
+      "advertiseAddr": "",
+      "scriptsEnabled": true
     },
     {
       "hostname": "worker1.example.com",
@@ -87,9 +120,10 @@ Each node supports extensive per-node configuration with overrides:
       "password": "your-password",
       "sshPort": 2222,
       "role": "worker",
-      "overlayProvider": "tailscale",
-      "overlayConfig": "your-tailscale-auth-key-here",
-      "glusterEnabled": true
+      "newHostname": "swarm-worker-01",
+      "rebootOnCompletion": true,
+      "glusterEnabled": true,
+      "scriptsEnabled": true
     }
   ]
 }
@@ -97,29 +131,32 @@ Each node supports extensive per-node configuration with overrides:
 
 **SSH Connection Settings:**
 - `hostname`: Hostname or IP address (required)
-- `username`: SSH username (default: `root`)
+- `username`: SSH username per node (default: `root`)
 - `password`: SSH password (use this OR `privateKeyPath`)
 - `privateKeyPath`: Path to SSH private key (use this OR `password`)
-- `sshPort`: SSH port (default: `22`)
+- `sshPort`: SSH port per node (default: `22`)
 
 **Node Role Settings:**
 - `primaryMaster`: Mark as primary master (exactly one required, must be a manager)
 - `role`: `manager` or `worker` (required)
 
-**Overlay Network Settings (per-node overrides):**
-- `overlayProvider`: Override global overlay provider for this node
-- `overlayConfig`: Provider-specific config:
-  - **Netbird**: Setup key (e.g., `NB_SETUP_KEY`)
-  - **Tailscale**: Auth key (e.g., `TS_AUTHKEY`)
-  - **WireGuard**: Interface name or config path (e.g., `wg0` or `/etc/wireguard/wg0.conf`)
+**System Settings:**
+- `newHostname`: New hostname to set on this node (optional, idempotent)
+  - If blank, hostname is not changed
+  - Uses `hostnamectl set-hostname` for idempotent hostname changes
+- `rebootOnCompletion`: Reboot this node after deployment (default: `false`)
+  - Initiates reboot with 15-second delay
+  - SSH connection is terminated cleanly before reboot
+- `scriptsEnabled`: Enable script execution on this node (default: `true`)
+  - If `false`, pre/post scripts are skipped for this node
 
 **GlusterFS Settings (per-node overrides):**
 - `glusterEnabled`: Enable GlusterFS on this node (workers only)
-- `glusterMount`: Override global mount path for this node
-- `glusterBrick`: Override global brick path for this node
+- `glusterMount`: Override global mount path for this node (optional)
+- `glusterBrick`: Override global brick path for this node (optional)
 
 **Docker Swarm Settings:**
-- `advertiseAddr`: Override auto-detected advertise address for Swarm
+- `advertiseAddr`: Override auto-detected advertise address for Swarm (optional)
 
 ### SSH Multi-Session Support
 
