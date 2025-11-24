@@ -68,12 +68,14 @@ func GlusterSetup(ctx context.Context, sshPool *ssh.Pool, workers []string, volu
 
 func createBrickDirectories(ctx context.Context, sshPool *ssh.Pool, workers []string, brick string) error {
 	cmd := fmt.Sprintf("mkdir -p %s", brick)
+	logging.L().Infow("creating brick directories", "hosts", strings.Join(workers, ", "), "command", cmd)
 	results := sshPool.RunAll(ctx, workers, cmd)
 
 	for host, result := range results {
 		if result.Err != nil {
 			return fmt.Errorf("failed to create brick directory on %s: %w (stderr: %s)", host, result.Err, result.Stderr)
 		}
+		logging.L().Infow("✅ brick directory created", "host", host, "path", brick)
 	}
 
 	return nil
@@ -91,15 +93,17 @@ func createTrustedPool(ctx context.Context, sshPool *ssh.Pool, workers []string)
 	// Probe all other workers from the orchestrator
 	for _, worker := range workers[1:] {
 		cmd := fmt.Sprintf("gluster peer probe %s", worker)
+		logging.L().Infow("probing GlusterFS peer", "host", orchestrator, "peer", worker, "command", cmd)
 		stdout, stderr, err := sshPool.Run(ctx, orchestrator, cmd)
 		if err != nil {
 			return fmt.Errorf("failed to probe %s from %s: %w (stderr: %s)", worker, orchestrator, err, stderr)
 		}
-		logging.L().Infow(fmt.Sprintf("peer probe %s: %s", worker, strings.TrimSpace(stdout)))
+		logging.L().Infow(fmt.Sprintf("✅ peer probe %s: %s", worker, strings.TrimSpace(stdout)))
 	}
 
 	// Verify peer status
 	cmd := "gluster peer status"
+	logging.L().Infow("verifying GlusterFS peer status", "host", orchestrator, "command", cmd)
 	stdout, stderr, err := sshPool.Run(ctx, orchestrator, cmd)
 	if err != nil {
 		return fmt.Errorf("failed to get peer status: %w (stderr: %s)", err, stderr)
@@ -123,6 +127,7 @@ func createVolume(ctx context.Context, sshPool *ssh.Pool, workers []string, volu
 	replicaCount := len(workers)
 	cmd := fmt.Sprintf("gluster volume create %s replica %d %s force", volume, replicaCount, brickList)
 
+	logging.L().Infow("creating GlusterFS volume", "host", orchestrator, "volume", volume, "replica", replicaCount, "command", cmd)
 	stdout, stderr, err := sshPool.Run(ctx, orchestrator, cmd)
 	if err != nil {
 		// Check if volume already exists
@@ -133,12 +138,13 @@ func createVolume(ctx context.Context, sshPool *ssh.Pool, workers []string, volu
 		return fmt.Errorf("failed to create volume: %w (stderr: %s)", err, stderr)
 	}
 
-	logging.L().Infow(fmt.Sprintf("volume created: %s", strings.TrimSpace(stdout)))
+	logging.L().Infow(fmt.Sprintf("✅ volume created: %s", strings.TrimSpace(stdout)))
 	return nil
 }
 
 func startVolume(ctx context.Context, sshPool *ssh.Pool, orchestrator, volume string) error {
 	cmd := fmt.Sprintf("gluster volume start %s", volume)
+	logging.L().Infow("starting GlusterFS volume", "host", orchestrator, "volume", volume, "command", cmd)
 	stdout, stderr, err := sshPool.Run(ctx, orchestrator, cmd)
 	if err != nil {
 		// Check if volume is already started

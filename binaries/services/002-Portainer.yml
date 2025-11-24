@@ -1,0 +1,54 @@
+# NAME: Portainer
+# DESCRIPTION: Portainer CE - Container management UI for Docker Swarm
+# ENABLED: true
+
+version: '3.8'
+
+services:
+  portainer:
+    image: portainer/portainer-ce:latest
+    hostname: 'portainer-{{.Task.Slot}}'
+    command: -H tcp://tasks.portainer-agent:9001 --tlsskipverify
+    environment:
+      PORTAINER_AGENT_ADDR: tasks.portainer-agent
+      LOG_LEVEL: INFO
+    ports:
+      - target: 9443
+        published: 9443
+        protocol: tcp
+        mode: ingress
+      - target: 8000
+        published: 8000
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - /mnt/GlusterFS/Docker/Swarm/0001/data/Portainer:/data
+    networks:
+      - DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION
+      - DOCKER-SWARM-CLUSTER-EXTERNAL-INGRESS
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.platform.os==linux
+          - node.role==worker
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        order: stop-first
+      rollback_config:
+        parallelism: 1
+        delay: 10s
+
+networks:
+  DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION:
+    external: true
+  DOCKER-SWARM-CLUSTER-EXTERNAL-INGRESS:
+    external: true
+

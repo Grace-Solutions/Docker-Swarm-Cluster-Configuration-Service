@@ -55,24 +55,33 @@ Or simply remove/rename the file (e.g., add `.disabled` extension).
 
 ### Portainer (Included)
 
-`portainer.yml` - Container management UI for Docker Swarm
+`001-PortainerAgent.yml` - Portainer Agent (global service on all nodes)
+`002-Portainer.yml` - Portainer CE (container management UI)
 - Accessible at `https://<any-node-ip>:9443`
-- Includes Portainer Agent (global) and Portainer CE (replicated)
 - Uses GlusterFS for persistent storage
+- Deployed in order (Agent first, then CE)
+
+## Service Deployment Order
+
+Services are deployed in **alphabetical order by filename**. Use numeric prefixes to control deployment order:
+
+- `001-PortainerAgent.yml` - Deployed first
+- `002-Portainer.yml` - Deployed second
+- `100-MyApp.yml` - Deployed after Portainer
 
 ## Network Requirements
 
 Services should use the pre-created overlay networks:
 
-- **DOCKER-SWARM-INTERNAL**: Internal cluster communication (subnet: 10.128.0.0/16)
-- **DOCKER-SWARM-EXTERNAL**: External-facing services (subnet: 10.129.0.0/16)
+- **DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION**: Internal cluster communication (subnet: 172.17.0.0/24)
+- **DOCKER-SWARM-CLUSTER-EXTERNAL-INGRESS**: External-facing services (subnet: 172.17.1.0/24)
 
 Example:
 ```yaml
 networks:
-  DOCKER-SWARM-INTERNAL:
+  DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION:
     external: true
-  DOCKER-SWARM-EXTERNAL:
+  DOCKER-SWARM-CLUSTER-EXTERNAL-INGRESS:
     external: true
 ```
 

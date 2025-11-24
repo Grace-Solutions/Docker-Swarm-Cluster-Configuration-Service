@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -88,6 +89,11 @@ func DiscoverServices(servicesDir string) ([]ServiceMetadata, error) {
 
 		services = append(services, metadata)
 	}
+
+	// Sort services by filename for deployment order (e.g., 001-service.yml, 002-service.yml)
+	sort.Slice(services, func(i, j int) bool {
+		return services[i].FileName < services[j].FileName
+	})
 
 	return services, nil
 }
@@ -243,7 +249,7 @@ func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string,
 	// Write content to remote file
 	writeCmd := fmt.Sprintf("cat > %s << 'CLUSTERCTL_EOF'\n%s\nCLUSTERCTL_EOF", remoteFile, string(content))
 
-	log.Infow("uploading service definition", "remoteFile", remoteFile, "size", len(content))
+	log.Infow("uploading service definition", "host", primaryMaster, "remoteFile", remoteFile, "size", len(content))
 
 	if _, stderr, err := sshPool.Run(ctx, primaryMaster, writeCmd); err != nil {
 		return fmt.Errorf("failed to upload service file: %w (stderr: %s)", err, stderr)
@@ -252,14 +258,14 @@ func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string,
 	// Deploy using docker stack deploy
 	deployCmd := fmt.Sprintf("docker stack deploy -c %s %s", remoteFile, svc.Name)
 
-	log.Infow("deploying stack", "command", deployCmd)
+	log.Infow("deploying Docker stack", "host", primaryMaster, "stack", svc.Name, "command", deployCmd)
 
 	stdout, stderr, err := sshPool.Run(ctx, primaryMaster, deployCmd)
 	if err != nil {
 		return fmt.Errorf("failed to deploy stack: %w (stderr: %s)", err, stderr)
 	}
 
-	log.Infow("stack deployed", "stdout", strings.TrimSpace(stdout))
+	log.Infow("✅ stack deployed", "stack", svc.Name, "stdout", strings.TrimSpace(stdout))
 
 	// Clean up temporary file
 	cleanupCmd := fmt.Sprintf("rm -f %s", remoteFile)

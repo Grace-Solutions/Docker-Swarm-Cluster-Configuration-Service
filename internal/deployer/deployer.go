@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"clusterctl/internal/config"
 	"clusterctl/internal/geolocation"
@@ -18,9 +19,15 @@ import (
 func Deploy(ctx context.Context, cfg *config.Config) error {
 	log := logging.L().With("component", "deployer")
 
+	// Track overall deployment metrics
+	startTime := time.Now()
+	var phasesCompleted int
+	var phasesFailed int
+
 	log.Infow("🚀 Starting cluster deployment",
 		"clusterName", cfg.GlobalSettings.ClusterName,
 		"nodes", len(cfg.Nodes),
+		"startTime", startTime.Format(time.RFC3339),
 	)
 
 	// Phase 1: Prepare SSH keys and connection pool
@@ -142,7 +149,17 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 		log.Infow("Phase 12: Skipping SSH public key removal (removeSSHPublicKeyOnCompletion=false)")
 	}
 
-	log.Infow("🎉 Cluster deployment complete!")
+	// Calculate final metrics
+	endTime := time.Now()
+	duration := endTime.Sub(startTime)
+
+	log.Infow("🎉 Cluster deployment complete!",
+		"totalDuration", duration.String(),
+		"phasesCompleted", phasesCompleted,
+		"phasesFailed", phasesFailed,
+		"startTime", startTime.Format(time.RFC3339),
+		"endTime", endTime.Format(time.RFC3339),
+	)
 	return nil
 }
 
