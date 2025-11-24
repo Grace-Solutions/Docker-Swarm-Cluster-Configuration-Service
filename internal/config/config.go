@@ -45,7 +45,6 @@ type NodeConfig struct {
 	SSHPort        int    `json:"sshPort"`        // SSH port (default: 22)
 
 	// Node Role Settings
-	PrimaryMaster bool   `json:"primaryMaster"` // Is this the primary master? (exactly one required)
 	Role          string `json:"role"`          // "manager" or "worker" (required)
 
 	// System Settings
@@ -62,6 +61,9 @@ type NodeConfig struct {
 
 	// Script Execution
 	ScriptsEnabled bool `json:"scriptsEnabled"` // Enable script execution on this node (default: true)
+
+	// Custom Labels
+	Labels map[string]string `json:"labels"` // Custom Docker node labels (key-value pairs)
 }
 
 // Load loads the configuration from a JSON file.
@@ -112,7 +114,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("no nodes defined in configuration")
 	}
 
-	primaryMasterCount := 0
+	managerCount := 0
 	for i, node := range c.Nodes {
 		if node.Hostname == "" {
 			return fmt.Errorf("node %d: hostname is required", i)
@@ -120,11 +122,8 @@ func (c *Config) Validate() error {
 		if node.Role != "manager" && node.Role != "worker" {
 			return fmt.Errorf("node %d (%s): role must be 'manager' or 'worker'", i, node.Hostname)
 		}
-		if node.PrimaryMaster {
-			primaryMasterCount++
-			if node.Role != "manager" {
-				return fmt.Errorf("node %d (%s): primaryMaster must be a manager", i, node.Hostname)
-			}
+		if node.Role == "manager" {
+			managerCount++
 		}
 		if node.GlusterEnabled && node.Role != "worker" {
 			return fmt.Errorf("node %d (%s): glusterEnabled can only be set on workers", i, node.Hostname)
@@ -134,8 +133,8 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if primaryMasterCount != 1 {
-		return fmt.Errorf("exactly one node must be marked as primaryMaster (found %d)", primaryMasterCount)
+	if managerCount == 0 {
+		return fmt.Errorf("at least one manager node is required")
 	}
 
 	return nil

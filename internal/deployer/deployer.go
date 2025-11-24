@@ -3,8 +3,10 @@ package deployer
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"clusterctl/internal/config"
+	"clusterctl/internal/geolocation"
 	"clusterctl/internal/logging"
 	"clusterctl/internal/orchestrator"
 	"clusterctl/internal/ssh"
@@ -72,28 +74,39 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 
 	// Phase 7: Setup Docker Swarm
 	log.Infow("Phase 7: Setting up Docker Swarm")
-	primaryMaster, managers, workers := categorizeNodes(cfg)
+	managers, workers := categorizeNodes(cfg)
+	if len(managers) == 0 {
+		return fmt.Errorf("no manager nodes found")
+	}
+	primaryMaster := managers[0] // Use first manager as primary
 	if err := orchestrator.SwarmSetup(ctx, sshPool, primaryMaster, managers, workers, primaryMaster); err != nil {
 		return fmt.Errorf("failed to setup Docker Swarm: %w", err)
 	}
-	log.Infow("✅ Docker Swarm setup complete")
+	log.Infow("✅ Docker Swarm setup complete", "primaryMaster", primaryMaster)
 
-	// Phase 8: Deploy Portainer if enabled
+	// Phase 8: Detect geolocation and apply node labels
+	log.Infow("Phase 8: Detecting geolocation and applying node labels")
+	if err := applyNodeLabels(ctx, cfg, sshPool, primaryMaster); err != nil {
+		return fmt.Errorf("failed to apply node labels: %w", err)
+	}
+	log.Infow("✅ Node labels applied")
+
+	// Phase 9: Deploy Portainer if enabled
 	if cfg.GlobalSettings.DeployPortainer {
-		log.Infow("Phase 8: Deploying Portainer")
+		log.Infow("Phase 9: Deploying Portainer")
 		// TODO: Implement Portainer deployment
 		log.Infow("⚠️  Portainer deployment not yet implemented")
 	}
 
-	// Phase 9: Execute post-deployment scripts
-	log.Infow("Phase 9: Executing post-deployment scripts")
+	// Phase 10: Execute post-deployment scripts
+	log.Infow("Phase 10: Executing post-deployment scripts")
 	if err := executeScripts(ctx, cfg, sshPool, cfg.GlobalSettings.PostScripts, "post"); err != nil {
 		return fmt.Errorf("failed to execute post-deployment scripts: %w", err)
 	}
 	log.Infow("✅ Post-deployment scripts complete")
 
-	// Phase 10: Reboot nodes if configured
-	log.Infow("Phase 10: Rebooting nodes if configured")
+	// Phase 11: Reboot nodes if configured
+	log.Infow("Phase 11: Rebooting nodes if configured")
 	if err := rebootNodes(ctx, cfg, sshPool); err != nil {
 		return fmt.Errorf("failed to reboot nodes: %w", err)
 	}
@@ -361,12 +374,10 @@ func getGlusterWorkers(cfg *config.Config) []string {
 	return workers
 }
 
-// categorizeNodes returns the primary master, managers, and workers.
-func categorizeNodes(cfg *config.Config) (primaryMaster string, managers []string, workers []string) {
+// categorizeNodes returns managers and workers.
+func categorizeNodes(cfg *config.Config) (managers []string, workers []string) {
 	for _, node := range cfg.Nodes {
-		if node.PrimaryMaster {
-			primaryMaster = node.Hostname
-		} else if node.Role == "manager" {
+		if node.Role == "manager" {
 			managers = append(managers, node.Hostname)
 		} else if node.Role == "worker" {
 			workers = append(workers, node.Hostname)
@@ -509,7 +520,119 @@ func rebootNodes(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool) err
 	return nil
 }
 
+// applyNodeLabels detects geolocation and applies automatic and custom labels to Docker nodes.
+func applyNodeLabels(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool, primaryMaster string) error {
+	log := logging.L().With("phase", "labels")
+
+	// Detect geolocation for all nodes in parallel
+	log.Infow("detecting geolocation for all nodes")
+	hostnames := make([]string, 0, len(cfg.Nodes))
+	for _, node := range cfg.Nodes {
+		hostnames = append(hostnames, node.Hostname)
+	}
+	geoInfoMap := geolocation.DetectGeoLocationBatch(ctx, sshPool, hostnames)
+
+	// Apply labels to each node
+	for _, node := range cfg.Nodes {
+		nodeLog := log.With("node", node.Hostname)
+		geoInfo := geoInfoMap[node.Hostname]
+
+		// Build automatic labels
+		labels := make(map[string]string)
+
+		// Geolocation labels
+		if geoInfo != nil {
+			if geoInfo.PublicIP != "" && geoInfo.PublicIP != "unknown" {
+				labels["geo.public-ip"] = geoInfo.PublicIP
+			}
+			if geoInfo.Country != "" {
+				labels["geo.country"] = geoInfo.Country
+			}
+			if geoInfo.CountryCode != "" {
+				labels["geo.country-code"] = strings.ToLower(geoInfo.CountryCode)
+			}
+			if geoInfo.Region != "" {
+				labels["geo.region"] = geoInfo.Region
+			}
+			if geoInfo.RegionName != "" {
+				labels["geo.region-name"] = geoInfo.RegionName
+			}
+			if geoInfo.City != "" {
+				labels["geo.city"] = geoInfo.City
+			}
+			if geoInfo.Timezone != "" {
+				labels["geo.timezone"] = geoInfo.Timezone
+			}
+			if geoInfo.ISP != "" {
+				labels["geo.isp"] = geoInfo.ISP
+			}
+		}
+
+		// Overlay provider label
+		if cfg.GlobalSettings.OverlayProvider != "" && cfg.GlobalSettings.OverlayProvider != "none" {
+			labels["overlay.provider"] = cfg.GlobalSettings.OverlayProvider
+		}
+
+		// GlusterFS labels
+		if node.GlusterEnabled {
+			labels["glusterfs.enabled"] = "true"
+
+			// Get effective mount path
+			mountPath := node.GlusterMount
+			if mountPath == "" {
+				mountPath = cfg.GlobalSettings.GlusterMount
+			}
+			if mountPath != "" {
+				labels["glusterfs.mount-path"] = mountPath
+			}
+
+			// Get effective brick path
+			brickPath := node.GlusterBrick
+			if brickPath == "" {
+				brickPath = cfg.GlobalSettings.GlusterBrick
+			}
+			if brickPath != "" {
+				labels["glusterfs.brick-path"] = brickPath
+			}
+		} else {
+			labels["glusterfs.enabled"] = "false"
+		}
+
+		// Cluster name label
+		if cfg.GlobalSettings.ClusterName != "" {
+			labels["cluster.name"] = cfg.GlobalSettings.ClusterName
+		}
+
+		// Role label
+		labels["node.role"] = node.Role
+
+		// Merge custom labels from config (custom labels override automatic labels)
+		for key, value := range node.Labels {
+			labels[key] = value
+		}
+
+		// Apply labels to the node
+		nodeLog.Infow("applying labels", "count", len(labels))
+		for key, value := range labels {
+			// Escape special characters in label values
+			escapedValue := strings.ReplaceAll(value, `"`, `\"`)
+			labelCmd := fmt.Sprintf(`docker node update --label-add "%s=%s" $(docker node ls --filter "name=%s" -q)`,
+				key, escapedValue, node.Hostname)
+
+			if _, stderr, err := sshPool.Run(ctx, primaryMaster, labelCmd); err != nil {
+				nodeLog.Warnw("failed to apply label", "key", key, "value", value, "error", err, "stderr", stderr)
+			} else {
+				nodeLog.Debugw("label applied", "key", key, "value", value)
+			}
+		}
+
+		nodeLog.Infow("labels applied successfully", "total", len(labels))
+	}
+
+	log.Infow("all node labels applied")
+	return nil
+}
+
 // NOTE: SSH key cleanup is not needed for config-based deployment.
 // We use credentials from the config file (password or privateKeyPath),
 // so we don't add/remove SSH keys during deployment.
-

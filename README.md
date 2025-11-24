@@ -29,7 +29,31 @@ This will:
 - ✅ Configure overlay network (Netbird/Tailscale/WireGuard)
 - ✅ Setup GlusterFS with replication and failover
 - ✅ Initialize Docker Swarm with managers and workers
+- ✅ Automatic geolocation detection and node labeling
 - ✅ Deploy Portainer (optional)
+
+### Deployment Flow
+
+When you run `clusterctl deploy --config clusterctl.json`, the following phases execute:
+
+1. **Phase 1**: SSH Connection Pool - Establish SSH connections to all nodes
+2. **Phase 2**: Set Hostnames - Idempotently set new hostnames (if configured)
+3. **Phase 3**: Pre-Deployment Scripts - Execute custom scripts before setup
+4. **Phase 4**: Install Dependencies - Install Docker, overlay provider, GlusterFS
+5. **Phase 5**: Configure Overlay Network - Setup VPN mesh (Netbird/Tailscale/WireGuard)
+6. **Phase 6**: Setup GlusterFS - Create trusted storage pool, volume, and mounts
+7. **Phase 7**: Setup Docker Swarm - Initialize swarm and join nodes
+8. **Phase 8**: Detect Geolocation & Apply Labels - Auto-detect region and apply all labels
+9. **Phase 9**: Deploy Portainer - Deploy Portainer web UI (if enabled)
+10. **Phase 10**: Post-Deployment Scripts - Execute custom scripts after setup
+11. **Phase 11**: Reboot Nodes - Gracefully reboot nodes (if configured)
+
+**Key Features:**
+- ✅ **Parallel execution** - All nodes configured simultaneously for speed
+- ✅ **Idempotent** - Safe to re-run, only changes what's needed
+- ✅ **Automatic detection** - Geolocation, overlay IPs, and advertise addresses
+- ✅ **No primary master required** - Deploy from any control server
+- ✅ **Comprehensive labeling** - Automatic geo + infrastructure + custom labels
 
 ### Configuration File Format
 
@@ -137,8 +161,9 @@ Each node supports extensive per-node configuration with overrides:
 - `sshPort`: SSH port per node (default: `22`)
 
 **Node Role Settings:**
-- `primaryMaster`: Mark as primary master (exactly one required, must be a manager)
 - `role`: `manager` or `worker` (required)
+  - **Note**: First manager in the list becomes the primary master (no `primaryMaster` field needed)
+  - This allows deployment from a separate control server that's not part of the swarm
 
 **System Settings:**
 - `newHostname`: New hostname to set on this node (optional, idempotent)
@@ -157,6 +182,55 @@ Each node supports extensive per-node configuration with overrides:
 
 **Docker Swarm Settings:**
 - `advertiseAddr`: Override auto-detected advertise address for Swarm (optional)
+
+**Custom Labels:**
+- `labels`: Key-value pairs for custom Docker node labels (optional)
+  - Example: `{"environment": "production", "storage": "ssd", "gpu": "nvidia-a100"}`
+  - Custom labels are merged with automatic labels (see below)
+  - Custom labels override automatic labels if there's a conflict
+
+### Automatic Node Labels
+
+The deployer automatically applies comprehensive labels to each Docker Swarm node during Phase 8 of deployment. These labels are detected by making outbound calls from each node itself.
+
+**Geolocation Labels** (detected via ip-api.com):
+- `geo.public-ip`: Public IP address of the node
+- `geo.country`: Country name (e.g., "United States")
+- `geo.country-code`: ISO country code (e.g., "us")
+- `geo.region`: Region/state code (e.g., "CA")
+- `geo.region-name`: Region/state name (e.g., "California")
+- `geo.city`: City name (e.g., "San Francisco")
+- `geo.timezone`: Timezone (e.g., "America/Los_Angeles")
+- `geo.isp`: Internet Service Provider name
+
+**Infrastructure Labels** (from configuration):
+- `overlay.provider`: Overlay network provider (e.g., "netbird", "tailscale")
+- `glusterfs.enabled`: "true" or "false"
+- `glusterfs.mount-path`: GlusterFS mount path (if enabled)
+- `glusterfs.brick-path`: GlusterFS brick path (if enabled)
+- `cluster.name`: Cluster name from global settings
+- `node.role`: "manager" or "worker"
+
+**Label Precedence:**
+1. Automatic labels are applied first
+2. Custom labels from the `labels` field override automatic labels
+3. All labels are applied via `docker node update --label-add` on the primary master
+
+**Example Usage:**
+```bash
+# Deploy services to specific regions
+docker service create --constraint 'node.labels.geo.country-code==us' nginx
+
+# Deploy to nodes with SSD storage
+docker service create --constraint 'node.labels.storage==ssd' postgres
+
+# Deploy to production environment only
+docker service create --constraint 'node.labels.environment==production' myapp
+
+# Deploy to GlusterFS-enabled nodes
+docker service create --constraint 'node.labels.glusterfs.enabled==true' \
+  --mount type=bind,src=/mnt/GlusterFS/Docker/Swarm/0001/data,dst=/data myapp
+```
 
 ### SSH Multi-Session Support
 
