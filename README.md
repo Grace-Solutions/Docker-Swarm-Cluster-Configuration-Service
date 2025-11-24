@@ -72,6 +72,7 @@ See `clusterctl.json.example` for a complete example. The configuration has two 
     "glusterBrick": "/mnt/GlusterFS/Docker/Swarm/0001/brick",
     "deployPortainer": true,
     "portainerPassword": "",
+    "removeSSHKeysOnCompletion": false,
     "preScripts": [
       {
         "enabled": true,
@@ -104,6 +105,10 @@ See `clusterctl.json.example` for a complete example. The configuration has two 
 - `glusterBrick`: Default brick path for GlusterFS (default: `/mnt/GlusterFS/Docker/Swarm/0001/brick`)
 - `deployPortainer`: Deploy Portainer web UI (default: `true`)
 - `portainerPassword`: Portainer admin password (default: auto-generated)
+- `removeSSHKeysOnCompletion`: Remove automatically generated SSH keys from nodes after deployment (default: `false`)
+  - **Note**: Only affects nodes using `useSSHAutomaticKeyPair=true`
+  - When `false` (default): SSH keys remain installed for future deployments
+  - When `true`: SSH keys are removed from nodes and local key pair is deleted
 - `preScripts`: Array of scripts to execute **before** deployment on all nodes
 - `postScripts`: Array of scripts to execute **after** deployment on all nodes
 
@@ -126,9 +131,9 @@ Each node supports extensive per-node configuration with overrides:
       "hostname": "manager1.example.com",
       "username": "root",
       "password": "",
-      "privateKeyPath": "/root/.ssh/id_ed25519",
+      "privateKeyPath": "",
+      "useSSHAutomaticKeyPair": true,
       "sshPort": 22,
-      "primaryMaster": true,
       "role": "manager",
       "newHostname": "swarm-manager-01",
       "rebootOnCompletion": false,
@@ -136,18 +141,27 @@ Each node supports extensive per-node configuration with overrides:
       "glusterMount": "",
       "glusterBrick": "",
       "advertiseAddr": "",
-      "scriptsEnabled": true
+      "scriptsEnabled": true,
+      "labels": {
+        "environment": "production",
+        "customer": "acme-corp"
+      }
     },
     {
       "hostname": "worker1.example.com",
       "username": "admin",
       "password": "your-password",
+      "useSSHAutomaticKeyPair": false,
       "sshPort": 2222,
       "role": "worker",
       "newHostname": "swarm-worker-01",
       "rebootOnCompletion": true,
       "glusterEnabled": true,
-      "scriptsEnabled": true
+      "scriptsEnabled": true,
+      "labels": {
+        "environment": "production",
+        "storage": "ssd"
+      }
     }
   ]
 }
@@ -156,8 +170,13 @@ Each node supports extensive per-node configuration with overrides:
 **SSH Connection Settings:**
 - `hostname`: Hostname or IP address (required)
 - `username`: SSH username per node (default: `root`)
-- `password`: SSH password (use this OR `privateKeyPath`)
-- `privateKeyPath`: Path to SSH private key (use this OR `password`)
+- `password`: SSH password (use this OR `privateKeyPath` OR `useSSHAutomaticKeyPair`)
+- `privateKeyPath`: Path to SSH private key (use this OR `password` OR `useSSHAutomaticKeyPair`)
+- `useSSHAutomaticKeyPair`: Use automatically generated ED25519 key pair (default: `false`)
+  - When `true`: Uses auto-generated key from `sshkeys/` directory (generated once, reused across deployments)
+  - When `false`: Connects with `password` or `privateKeyPath` and installs the auto-generated public key for future use
+  - **Note**: Key pair is only generated if it doesn't already exist
+  - **Location**: `sshkeys/clusterctl_ed25519` (private) and `sshkeys/clusterctl_ed25519.pub` (public) next to binary
 - `sshPort`: SSH port per node (default: `22`)
 
 **Node Role Settings:**

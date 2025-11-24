@@ -8,6 +8,7 @@
     "glusterBrick": "/mnt/GlusterFS/Docker/Swarm/0001/brick",
     "deployPortainer": true,
     "portainerPassword": "",
+    "removeSSHKeysOnCompletion": false,
     "preScripts": [
       {
         "enabled": true,
@@ -30,7 +31,8 @@
       "hostname": "manager1.example.com",
       "username": "root",
       "password": "",
-      "privateKeyPath": "/root/.ssh/id_ed25519",
+      "privateKeyPath": "",
+      "useSSHAutomaticKeyPair": true,
       "sshPort": 22,
       "role": "manager",
       "newHostname": "swarm-manager-01",
@@ -42,14 +44,17 @@
       "scriptsEnabled": true,
       "labels": {
         "environment": "production",
-        "datacenter": "dc1"
+        "customer": "acme-corp",
+        "isVPS": "true",
+        "vpsProvider": "LiquidWeb"
       }
     },
     {
       "hostname": "manager2.example.com",
       "username": "root",
       "password": "",
-      "privateKeyPath": "/root/.ssh/id_ed25519",
+      "privateKeyPath": "",
+      "useSSHAutomaticKeyPair": true,
       "sshPort": 22,
       "role": "manager",
       "newHostname": "swarm-manager-02",
@@ -61,14 +66,17 @@
       "scriptsEnabled": true,
       "labels": {
         "environment": "production",
-        "datacenter": "dc1"
+        "customer": "acme-corp",
+        "isVPS": "true",
+        "vpsProvider": "LiquidWeb"
       }
     },
     {
       "hostname": "manager3.example.com",
       "username": "root",
       "password": "",
-      "privateKeyPath": "/root/.ssh/id_ed25519",
+      "privateKeyPath": "",
+      "useSSHAutomaticKeyPair": true,
       "sshPort": 22,
       "role": "manager",
       "newHostname": "swarm-manager-03",
@@ -80,7 +88,9 @@
       "scriptsEnabled": true,
       "labels": {
         "environment": "production",
-        "datacenter": "dc2"
+        "customer": "acme-corp",
+        "isVPS": "true",
+        "vpsProvider": "IONOS"
       }
     },
     {
@@ -88,6 +98,7 @@
       "username": "root",
       "password": "your-password-here",
       "privateKeyPath": "",
+      "useSSHAutomaticKeyPair": false,
       "sshPort": 22,
       "role": "worker",
       "newHostname": "swarm-worker-01",
@@ -99,6 +110,9 @@
       "scriptsEnabled": true,
       "labels": {
         "environment": "production",
+        "customer": "acme-corp",
+        "isVPS": "true",
+        "vpsProvider": "LiquidWeb",
         "storage": "ssd"
       }
     },
@@ -106,7 +120,8 @@
       "hostname": "worker2.example.com",
       "username": "root",
       "password": "",
-      "privateKeyPath": "/root/.ssh/id_ed25519",
+      "privateKeyPath": "",
+      "useSSHAutomaticKeyPair": true,
       "sshPort": 22,
       "role": "worker",
       "newHostname": "swarm-worker-02",
@@ -118,6 +133,9 @@
       "scriptsEnabled": true,
       "labels": {
         "environment": "production",
+        "customer": "acme-corp",
+        "isVPS": "true",
+        "vpsProvider": "LiquidWeb",
         "storage": "ssd"
       }
     },
@@ -125,7 +143,8 @@
       "hostname": "worker3.example.com",
       "username": "root",
       "password": "",
-      "privateKeyPath": "/root/.ssh/id_ed25519",
+      "privateKeyPath": "",
+      "useSSHAutomaticKeyPair": true,
       "sshPort": 22,
       "role": "worker",
       "newHostname": "swarm-worker-03",
@@ -137,6 +156,9 @@
       "scriptsEnabled": true,
       "labels": {
         "environment": "production",
+        "customer": "acme-corp",
+        "isVPS": "true",
+        "vpsProvider": "RackNerd",
         "storage": "nvme"
       }
     },
@@ -144,7 +166,8 @@
       "hostname": "worker4.example.com",
       "username": "admin",
       "password": "",
-      "privateKeyPath": "/root/.ssh/id_ed25519",
+      "privateKeyPath": "",
+      "useSSHAutomaticKeyPair": true,
       "sshPort": 2222,
       "role": "worker",
       "newHostname": "swarm-worker-04",
@@ -155,7 +178,10 @@
       "advertiseAddr": "",
       "scriptsEnabled": true,
       "labels": {
-        "environment": "staging",
+        "environment": "production",
+        "customer": "acme-corp",
+        "isVPS": "true",
+        "vpsProvider": "LiquidWeb",
         "storage": "hdd"
       }
     },
@@ -163,7 +189,8 @@
       "hostname": "worker5.example.com",
       "username": "root",
       "password": "",
-      "privateKeyPath": "/root/.ssh/id_ed25519",
+      "privateKeyPath": "",
+      "useSSHAutomaticKeyPair": true,
       "sshPort": 22,
       "role": "worker",
       "newHostname": "swarm-worker-05",
@@ -175,6 +202,9 @@
       "scriptsEnabled": true,
       "labels": {
         "environment": "production",
+        "customer": "acme-corp",
+        "isVPS": "true",
+        "vpsProvider": "LiquidWeb",
         "gpu": "nvidia-a100"
       }
     },
@@ -182,7 +212,8 @@
       "hostname": "worker6.example.com",
       "username": "root",
       "password": "",
-      "privateKeyPath": "/root/.ssh/id_ed25519",
+      "privateKeyPath": "",
+      "useSSHAutomaticKeyPair": true,
       "sshPort": 22,
       "role": "worker",
       "newHostname": "swarm-worker-06",
@@ -194,6 +225,9 @@
       "scriptsEnabled": true,
       "labels": {
         "environment": "production",
+        "customer": "acme-corp",
+        "isVPS": "true",
+        "vpsProvider": "IONOS",
         "backup-node": "true"
       }
     }

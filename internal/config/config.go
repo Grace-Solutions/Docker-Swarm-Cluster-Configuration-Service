@@ -23,33 +23,35 @@ type ScriptConfig struct {
 
 // GlobalSettings contains cluster-wide configuration.
 type GlobalSettings struct {
-	ClusterName       string         `json:"clusterName"`       // Cluster name (required)
-	OverlayProvider   string         `json:"overlayProvider"`   // "netbird", "tailscale", "wireguard", "none" (default: "none")
-	OverlayConfig     string         `json:"overlayConfig"`     // Provider-specific config (e.g., Netbird setup key, Tailscale auth key)
-	GlusterVolume     string         `json:"glusterVolume"`     // GlusterFS volume name (default: "docker-swarm-0001")
-	GlusterMount      string         `json:"glusterMount"`      // GlusterFS mount path (default: "/mnt/GlusterFS/Docker/Swarm/0001/data")
-	GlusterBrick      string         `json:"glusterBrick"`      // GlusterFS brick path (default: "/mnt/GlusterFS/Docker/Swarm/0001/brick")
-	DeployPortainer   bool           `json:"deployPortainer"`   // Deploy Portainer after setup (default: true)
-	PortainerPassword string         `json:"portainerPassword"` // Portainer admin password (default: auto-generated)
-	PreScripts        []ScriptConfig `json:"preScripts"`        // Scripts to execute before deployment
-	PostScripts       []ScriptConfig `json:"postScripts"`       // Scripts to execute after deployment
+	ClusterName              string         `json:"clusterName"`              // Cluster name (required)
+	OverlayProvider          string         `json:"overlayProvider"`          // "netbird", "tailscale", "wireguard", "none" (default: "none")
+	OverlayConfig            string         `json:"overlayConfig"`            // Provider-specific config (e.g., Netbird setup key, Tailscale auth key)
+	GlusterVolume            string         `json:"glusterVolume"`            // GlusterFS volume name (default: "docker-swarm-0001")
+	GlusterMount             string         `json:"glusterMount"`             // GlusterFS mount path (default: "/mnt/GlusterFS/Docker/Swarm/0001/data")
+	GlusterBrick             string         `json:"glusterBrick"`             // GlusterFS brick path (default: "/mnt/GlusterFS/Docker/Swarm/0001/brick")
+	DeployPortainer          bool           `json:"deployPortainer"`          // Deploy Portainer after setup (default: true)
+	PortainerPassword        string         `json:"portainerPassword"`        // Portainer admin password (default: auto-generated)
+	PreScripts               []ScriptConfig `json:"preScripts"`               // Scripts to execute before deployment
+	PostScripts              []ScriptConfig `json:"postScripts"`              // Scripts to execute after deployment
+	RemoveSSHKeysOnCompletion bool          `json:"removeSSHKeysOnCompletion"` // Remove SSH keys after deployment (default: false)
 }
 
 // NodeConfig represents a single node's configuration.
 type NodeConfig struct {
 	// SSH Connection Settings
-	Hostname       string `json:"hostname"`       // Hostname or IP address (required)
-	Username       string `json:"username"`       // SSH username (required, default: "root")
-	Password       string `json:"password"`       // SSH password (optional, use privateKeyPath instead)
-	PrivateKeyPath string `json:"privateKeyPath"` // Path to SSH private key (optional, use password instead)
-	SSHPort        int    `json:"sshPort"`        // SSH port (default: 22)
+	Hostname              string `json:"hostname"`              // Hostname or IP address (required)
+	Username              string `json:"username"`              // SSH username (required, default: "root")
+	Password              string `json:"password"`              // SSH password (optional, use privateKeyPath instead)
+	PrivateKeyPath        string `json:"privateKeyPath"`        // Path to SSH private key (optional, use password instead)
+	UseSSHAutomaticKeyPair bool   `json:"useSSHAutomaticKeyPair"` // Use automatically generated SSH key pair (default: false)
+	SSHPort               int    `json:"sshPort"`               // SSH port (default: 22)
 
 	// Node Role Settings
-	Role          string `json:"role"`          // "manager" or "worker" (required)
+	Role string `json:"role"` // "manager" or "worker" (required)
 
 	// System Settings
-	NewHostname string `json:"newHostname"` // New hostname to set (optional, idempotent)
-	RebootOnCompletion bool `json:"rebootOnCompletion"` // Reboot node after deployment (default: false)
+	NewHostname        string `json:"newHostname"`        // New hostname to set (optional, idempotent)
+	RebootOnCompletion bool   `json:"rebootOnCompletion"` // Reboot node after deployment (default: false)
 
 	// GlusterFS Settings (per-node overrides)
 	GlusterEnabled bool   `json:"glusterEnabled"` // Enable GlusterFS on this node (workers only)
@@ -128,8 +130,9 @@ func (c *Config) Validate() error {
 		if node.GlusterEnabled && node.Role != "worker" {
 			return fmt.Errorf("node %d (%s): glusterEnabled can only be set on workers", i, node.Hostname)
 		}
-		if node.Password == "" && node.PrivateKeyPath == "" {
-			return fmt.Errorf("node %d (%s): either password or privateKeyPath must be specified", i, node.Hostname)
+		// If not using automatic key pair, require password or privateKeyPath
+		if !node.UseSSHAutomaticKeyPair && node.Password == "" && node.PrivateKeyPath == "" {
+			return fmt.Errorf("node %d (%s): either password, privateKeyPath, or useSSHAutomaticKeyPair must be specified", i, node.Hostname)
 		}
 	}
 

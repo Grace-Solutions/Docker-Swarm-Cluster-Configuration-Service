@@ -10,6 +10,7 @@ import (
 	"clusterctl/internal/logging"
 	"clusterctl/internal/orchestrator"
 	"clusterctl/internal/ssh"
+	"clusterctl/internal/sshkeys"
 )
 
 // Deploy orchestrates the complete cluster deployment from the configuration.
@@ -21,13 +22,18 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 		"nodes", len(cfg.Nodes),
 	)
 
-	// Phase 1: Prepare SSH connection pool
-	log.Infow("Phase 1: Preparing SSH connections")
-	sshPool, err := createSSHPool(cfg)
+	// Phase 1: Prepare SSH keys and connection pool
+	log.Infow("Phase 1: Preparing SSH keys and connections")
+	keyPair, err := prepareSSHKeys(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to prepare SSH keys: %w", err)
+	}
+
+	sshPool, err := createSSHPool(cfg, keyPair)
 	if err != nil {
 		return fmt.Errorf("failed to create SSH pool: %w", err)
 	}
-	log.Infow("✅ SSH connection pool ready")
+	log.Infow("✅ SSH keys and connection pool ready")
 
 	// Phase 2: Set hostnames if configured
 	log.Infow("Phase 2: Setting hostnames")
@@ -112,21 +118,117 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 	}
 	log.Infow("✅ Reboot initiated for configured nodes")
 
+	// Phase 12: Remove SSH keys if configured
+	if cfg.GlobalSettings.RemoveSSHKeysOnCompletion {
+		log.Infow("Phase 12: Removing SSH keys from nodes")
+		if err := removeSSHKeysFromNodes(ctx, cfg, sshPool, keyPair); err != nil {
+			log.Warnw("failed to remove SSH keys from nodes", "error", err)
+		} else {
+			log.Infow("✅ SSH keys removed from nodes")
+		}
+
+		// Remove local SSH key pair
+		if err := sshkeys.RemoveKeyPair(""); err != nil {
+			log.Warnw("failed to remove local SSH key pair", "error", err)
+		} else {
+			log.Infow("✅ Local SSH key pair removed")
+		}
+	} else {
+		log.Infow("Phase 12: Skipping SSH key removal (removeSSHKeysOnCompletion=false)")
+	}
+
 	log.Infow("🎉 Cluster deployment complete!")
 	return nil
 }
 
-// createSSHPool creates an SSH connection pool from the configuration.
-func createSSHPool(cfg *config.Config) (*ssh.Pool, error) {
-	authConfigs := make(map[string]ssh.AuthConfig)
+// prepareSSHKeys ensures SSH key pair exists and installs public keys on nodes that need it.
+func prepareSSHKeys(cfg *config.Config) (*sshkeys.KeyPair, error) {
+	log := logging.L().With("component", "ssh-keys")
 
+	// Check if any nodes use automatic key pair
+	needsKeyPair := false
 	for _, node := range cfg.Nodes {
-		authConfigs[node.Hostname] = ssh.AuthConfig{
+		if node.UseSSHAutomaticKeyPair {
+			needsKeyPair = true
+			break
+		}
+	}
+
+	if !needsKeyPair {
+		log.Infow("no nodes use automatic SSH key pair, skipping key generation")
+		return nil, nil
+	}
+
+	// Ensure key pair exists (generate if needed)
+	keyPair, err := sshkeys.EnsureKeyPair("")
+	if err != nil {
+		return nil, fmt.Errorf("failed to ensure SSH key pair: %w", err)
+	}
+
+	log.Infow("SSH key pair ready", "privateKey", keyPair.PrivateKeyPath)
+
+	// Install public key on nodes that don't use automatic key pair
+	// (these nodes will use password/privateKeyPath for initial connection)
+	ctx := context.Background()
+	for _, node := range cfg.Nodes {
+		if node.UseSSHAutomaticKeyPair {
+			continue // Will use automatic key pair directly
+		}
+
+		// Connect using password or privateKeyPath and install public key
+		nodeLog := log.With("node", node.Hostname)
+		nodeLog.Infow("installing public key on node")
+
+		authConfig := ssh.AuthConfig{
 			Username:       node.Username,
 			Password:       node.Password,
 			PrivateKeyPath: node.PrivateKeyPath,
 			Port:           node.SSHPort,
 		}
+
+		tempPool := ssh.NewPool(map[string]ssh.AuthConfig{
+			node.Hostname: authConfig,
+		})
+
+		// Install public key
+		installCmd := fmt.Sprintf(
+			"mkdir -p ~/.ssh && chmod 700 ~/.ssh && "+
+				"echo '%s' >> ~/.ssh/authorized_keys && "+
+				"chmod 600 ~/.ssh/authorized_keys && "+
+				"sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys",
+			strings.TrimSpace(keyPair.PublicKey),
+		)
+
+		if _, stderr, err := tempPool.Run(ctx, node.Hostname, installCmd); err != nil {
+			nodeLog.Warnw("failed to install public key", "error", err, "stderr", stderr)
+		} else {
+			nodeLog.Infow("public key installed successfully")
+		}
+	}
+
+	return keyPair, nil
+}
+
+// createSSHPool creates an SSH connection pool from the configuration.
+func createSSHPool(cfg *config.Config, keyPair *sshkeys.KeyPair) (*ssh.Pool, error) {
+	authConfigs := make(map[string]ssh.AuthConfig)
+
+	for _, node := range cfg.Nodes {
+		authConfig := ssh.AuthConfig{
+			Username: node.Username,
+			Port:     node.SSHPort,
+		}
+
+		if node.UseSSHAutomaticKeyPair && keyPair != nil {
+			// Use automatic key pair
+			authConfig.PrivateKeyPath = keyPair.PrivateKeyPath
+		} else {
+			// Use configured credentials
+			authConfig.Password = node.Password
+			authConfig.PrivateKeyPath = node.PrivateKeyPath
+		}
+
+		authConfigs[node.Hostname] = authConfig
 	}
 
 	return ssh.NewPool(authConfigs), nil
@@ -633,6 +735,30 @@ func applyNodeLabels(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool,
 	return nil
 }
 
-// NOTE: SSH key cleanup is not needed for config-based deployment.
-// We use credentials from the config file (password or privateKeyPath),
-// so we don't add/remove SSH keys during deployment.
+// removeSSHKeysFromNodes removes the automatic SSH public key from all nodes.
+func removeSSHKeysFromNodes(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool, keyPair *sshkeys.KeyPair) error {
+	if keyPair == nil {
+		return nil // No key pair to remove
+	}
+
+	log := logging.L().With("phase", "ssh-key-removal")
+
+	for _, node := range cfg.Nodes {
+		nodeLog := log.With("node", node.Hostname)
+		nodeLog.Infow("removing public key from node")
+
+		// Remove the public key from authorized_keys
+		removeCmd := fmt.Sprintf(
+			"sed -i '\\|%s|d' ~/.ssh/authorized_keys 2>/dev/null || true",
+			strings.TrimSpace(keyPair.PublicKey),
+		)
+
+		if _, stderr, err := sshPool.Run(ctx, node.Hostname, removeCmd); err != nil {
+			nodeLog.Warnw("failed to remove public key", "error", err, "stderr", stderr)
+		} else {
+			nodeLog.Infow("public key removed successfully")
+		}
+	}
+
+	return nil
+}
