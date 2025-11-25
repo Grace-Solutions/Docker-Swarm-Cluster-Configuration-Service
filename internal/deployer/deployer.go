@@ -10,6 +10,7 @@ import (
 	"clusterctl/internal/geolocation"
 	"clusterctl/internal/logging"
 	"clusterctl/internal/orchestrator"
+	"clusterctl/internal/retry"
 	"clusterctl/internal/services"
 	"clusterctl/internal/ssh"
 	"clusterctl/internal/sshkeys"
@@ -492,13 +493,16 @@ func installDocker(ctx context.Context, sshPool *ssh.Pool, host string) error {
 		return nil
 	}
 
-	// Install Docker
-	cmd := "curl -fsSL https://get.docker.com | sh && systemctl enable docker && systemctl start docker"
-	_, stderr, err := sshPool.Run(ctx, host, cmd)
-	if err != nil {
-		return fmt.Errorf("docker install failed: %w (stderr: %s)", err, stderr)
-	}
-	return nil
+	// Install Docker with retry logic (network downloads can be flaky)
+	retryCfg := retry.PackageManagerConfig(fmt.Sprintf("install-docker-%s", host))
+	return retry.Do(ctx, retryCfg, func() error {
+		cmd := "curl -fsSL https://get.docker.com | sh && systemctl enable docker && systemctl start docker"
+		_, stderr, err := sshPool.Run(ctx, host, cmd)
+		if err != nil {
+			return fmt.Errorf("docker install failed: %w (stderr: %s)", err, stderr)
+		}
+		return nil
+	})
 }
 
 // installGlusterFS installs GlusterFS on a node via SSH.
@@ -517,11 +521,15 @@ func installGlusterFS(ctx context.Context, sshPool *ssh.Pool, host string, serve
 		cmd = "apt-get update && apt-get install -y glusterfs-client"
 	}
 
-	_, stderr, err := sshPool.Run(ctx, host, cmd)
-	if err != nil {
-		return fmt.Errorf("glusterfs install failed: %w (stderr: %s)", err, stderr)
-	}
-	return nil
+	// Install with retry logic (apt locks, network issues)
+	retryCfg := retry.PackageManagerConfig(fmt.Sprintf("install-glusterfs-%s", host))
+	return retry.Do(ctx, retryCfg, func() error {
+		_, stderr, err := sshPool.Run(ctx, host, cmd)
+		if err != nil {
+			return fmt.Errorf("glusterfs install failed: %w (stderr: %s)", err, stderr)
+		}
+		return nil
+	})
 }
 
 // configureOverlay configures the overlay network on all enabled nodes idempotently.
@@ -588,25 +596,39 @@ func configureNetbirdOnNode(ctx context.Context, sshPool *ssh.Pool, node config.
 		return nil
 	}
 
-	// Install netbird if not present
-	installCmd := `
+	// Install netbird if not present (with retry)
+	retryCfg := retry.NetworkConfig(fmt.Sprintf("install-netbird-%s", node.Hostname))
+	err = retry.Do(ctx, retryCfg, func() error {
+		installCmd := `
 if ! command -v netbird &> /dev/null; then
     echo "Installing Netbird..."
     curl -fsSL https://pkgs.netbird.io/install.sh | sh
 fi
 `
-	if _, stderr, err := sshPool.Run(ctx, node.Hostname, installCmd); err != nil {
-		return fmt.Errorf("failed to install netbird: %w (stderr: %s)", err, stderr)
+		if _, stderr, err := sshPool.Run(ctx, node.Hostname, installCmd); err != nil {
+			return fmt.Errorf("failed to install netbird: %w (stderr: %s)", err, stderr)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
-	// Start netbird with setup key if provided
-	upCmd := "netbird up"
-	if overlayConfig != "" {
-		upCmd = fmt.Sprintf("NB_SETUP_KEY='%s' netbird up", overlayConfig)
-	}
+	// Start netbird with setup key if provided (with retry)
+	retryCfg = retry.NetworkConfig(fmt.Sprintf("start-netbird-%s", node.Hostname))
+	err = retry.Do(ctx, retryCfg, func() error {
+		upCmd := "netbird up"
+		if overlayConfig != "" {
+			upCmd = fmt.Sprintf("netbird up %s", overlayConfig)
+		}
 
-	if _, stderr, err := sshPool.Run(ctx, node.Hostname, upCmd); err != nil {
-		return fmt.Errorf("failed to start netbird: %w (stderr: %s)", err, stderr)
+		if _, stderr, err := sshPool.Run(ctx, node.Hostname, upCmd); err != nil {
+			return fmt.Errorf("failed to start netbird: %w (stderr: %s)", err, stderr)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	log.Infow("netbird configured successfully")
@@ -625,25 +647,39 @@ func configureTailscaleOnNode(ctx context.Context, sshPool *ssh.Pool, node confi
 		return nil
 	}
 
-	// Install tailscale if not present
-	installCmd := `
+	// Install tailscale if not present (with retry)
+	retryCfg := retry.NetworkConfig(fmt.Sprintf("install-tailscale-%s", node.Hostname))
+	err = retry.Do(ctx, retryCfg, func() error {
+		installCmd := `
 if ! command -v tailscale &> /dev/null; then
     echo "Installing Tailscale..."
     curl -fsSL https://tailscale.com/install.sh | sh
 fi
 `
-	if _, stderr, err := sshPool.Run(ctx, node.Hostname, installCmd); err != nil {
-		return fmt.Errorf("failed to install tailscale: %w (stderr: %s)", err, stderr)
+		if _, stderr, err := sshPool.Run(ctx, node.Hostname, installCmd); err != nil {
+			return fmt.Errorf("failed to install tailscale: %w (stderr: %s)", err, stderr)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
-	// Start tailscale with auth key if provided
-	upCmd := "tailscale up"
-	if overlayConfig != "" {
-		upCmd = fmt.Sprintf("TS_AUTHKEY='%s' tailscale up", overlayConfig)
-	}
+	// Start tailscale with auth key if provided (with retry)
+	retryCfg = retry.NetworkConfig(fmt.Sprintf("start-tailscale-%s", node.Hostname))
+	err = retry.Do(ctx, retryCfg, func() error {
+		upCmd := "tailscale up"
+		if overlayConfig != "" {
+			upCmd = fmt.Sprintf("tailscale up --authkey='%s'", overlayConfig)
+		}
 
-	if _, stderr, err := sshPool.Run(ctx, node.Hostname, upCmd); err != nil {
-		return fmt.Errorf("failed to start tailscale: %w (stderr: %s)", err, stderr)
+		if _, stderr, err := sshPool.Run(ctx, node.Hostname, upCmd); err != nil {
+			return fmt.Errorf("failed to start tailscale: %w (stderr: %s)", err, stderr)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	log.Infow("tailscale configured successfully")

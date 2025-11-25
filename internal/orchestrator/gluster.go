@@ -56,13 +56,25 @@ func GlusterSetup(ctx context.Context, sshPool *ssh.Pool, workers []string, volu
 		return fmt.Errorf("failed to verify mounts: %w", err)
 	}
 
-	// Phase 7: Test replication
-	log.Infow("phase 7: testing GlusterFS replication")
+	// Phase 7: Verify volume health
+	log.Infow("phase 7: verifying GlusterFS volume health")
+	if err := verifyVolumeHealth(ctx, sshPool, workers[0], volume, len(workers)); err != nil {
+		return fmt.Errorf("failed volume health verification: %w", err)
+	}
+
+	// Phase 8: Test replication
+	log.Infow("phase 8: testing GlusterFS replication")
 	if err := testReplication(ctx, sshPool, workers, mount); err != nil {
 		return fmt.Errorf("failed replication test: %w", err)
 	}
 
-	log.Infow("GlusterFS setup completed successfully")
+	// Phase 9: Create standard directory structure
+	log.Infow("phase 9: creating standard directory structure on GlusterFS volume")
+	if err := createStandardDirectories(ctx, sshPool, workers, mount); err != nil {
+		return fmt.Errorf("failed to create standard directories: %w", err)
+	}
+
+	log.Infow("✅ GlusterFS setup completed successfully")
 	return nil
 }
 
@@ -265,6 +277,150 @@ func testReplication(ctx context.Context, sshPool *ssh.Pool, workers []string, m
 	sshPool.Run(ctx, workers[0], cleanupCmd)
 
 	logging.L().Infow("✅ GlusterFS replication test PASSED")
+	return nil
+}
+
+// verifyVolumeHealth performs comprehensive health checks on the GlusterFS volume.
+func verifyVolumeHealth(ctx context.Context, sshPool *ssh.Pool, orchestrator, volume string, expectedReplicas int) error {
+	log := logging.L()
+
+	// 1. Verify volume exists and is started
+	cmd := fmt.Sprintf("gluster volume info %s", volume)
+	log.Infow("checking volume status", "host", orchestrator, "volume", volume, "command", cmd)
+	stdout, stderr, err := sshPool.Run(ctx, orchestrator, cmd)
+	if err != nil {
+		return fmt.Errorf("failed to get volume info: %w (stderr: %s)", err, stderr)
+	}
+
+	// Check volume is started
+	if !strings.Contains(stdout, "Status: Started") {
+		return fmt.Errorf("volume %s is not in Started state:\n%s", volume, stdout)
+	}
+	log.Infow("✅ volume is in Started state", "volume", volume)
+
+	// Check replica count
+	replicaLine := ""
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.Contains(line, "Number of Bricks:") {
+			replicaLine = line
+			break
+		}
+	}
+	if replicaLine != "" {
+		log.Infow("volume brick configuration", "volume", volume, "config", strings.TrimSpace(replicaLine))
+	}
+
+	// 2. Verify all bricks are online
+	cmd = fmt.Sprintf("gluster volume status %s", volume)
+	log.Infow("checking brick status", "host", orchestrator, "volume", volume, "command", cmd)
+	stdout, stderr, err = sshPool.Run(ctx, orchestrator, cmd)
+	if err != nil {
+		return fmt.Errorf("failed to get volume status: %w (stderr: %s)", err, stderr)
+	}
+
+	// Count online bricks
+	onlineBricks := 0
+	offlineBricks := 0
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.Contains(line, "Brick") && strings.Contains(line, ":") {
+			// Check if brick is online (has "Y" in Online column)
+			if strings.Contains(line, " Y ") {
+				onlineBricks++
+			} else {
+				offlineBricks++
+				log.Warnw("brick is offline", "line", strings.TrimSpace(line))
+			}
+		}
+	}
+
+	if offlineBricks > 0 {
+		return fmt.Errorf("volume %s has %d offline bricks (expected all %d bricks online)", volume, offlineBricks, expectedReplicas)
+	}
+	log.Infow("✅ all bricks are online", "volume", volume, "onlineBricks", onlineBricks, "expectedBricks", expectedReplicas)
+
+	// 3. Check heal status (split-brain detection)
+	cmd = fmt.Sprintf("gluster volume heal %s info", volume)
+	log.Infow("checking heal status", "host", orchestrator, "volume", volume, "command", cmd)
+	stdout, stderr, err = sshPool.Run(ctx, orchestrator, cmd)
+	if err != nil {
+		// Heal info can fail on new volumes, log warning but don't fail
+		log.Warnw("failed to get heal info (this is normal for new volumes)", "volume", volume, "err", err, "stderr", stderr)
+	} else {
+		// Check for entries needing heal
+		healNeeded := false
+		for _, line := range strings.Split(stdout, "\n") {
+			if strings.Contains(line, "Number of entries:") && !strings.Contains(line, "Number of entries: 0") {
+				healNeeded = true
+				log.Warnw("volume has entries needing heal", "line", strings.TrimSpace(line))
+			}
+		}
+		if !healNeeded {
+			log.Infow("✅ no heal entries found (volume is healthy)", "volume", volume)
+		}
+	}
+
+	// 4. Log full volume info for reference
+	cmd = fmt.Sprintf("gluster volume info %s", volume)
+	stdout, _, _ = sshPool.Run(ctx, orchestrator, cmd)
+	log.Infow("volume info", "volume", volume, "info", "\n"+stdout)
+
+	log.Infow("✅ volume health verification PASSED", "volume", volume, "replicas", expectedReplicas)
+	return nil
+}
+
+// createStandardDirectories creates a consistent directory structure across all nodes.
+func createStandardDirectories(ctx context.Context, sshPool *ssh.Pool, workers []string, mount string) error {
+	log := logging.L()
+
+	// Standard directories to create on the GlusterFS volume
+	standardDirs := []string{
+		"data",
+		"data/Portainer",
+		"data/NginxUI",
+		"data/NginxUI/app",
+		"config",
+		"logs",
+		"backups",
+		".clusterctl",
+	}
+
+	// Create directories on first worker (will replicate to all)
+	orchestrator := workers[0]
+	for _, dir := range standardDirs {
+		fullPath := fmt.Sprintf("%s/%s", mount, dir)
+		cmd := fmt.Sprintf("mkdir -p %s && chmod 755 %s", fullPath, fullPath)
+		log.Infow("creating standard directory", "host", orchestrator, "path", fullPath, "command", cmd)
+		_, stderr, err := sshPool.Run(ctx, orchestrator, cmd)
+		if err != nil {
+			return fmt.Errorf("failed to create directory %s: %w (stderr: %s)", fullPath, err, stderr)
+		}
+		log.Infow("✅ directory created", "path", fullPath)
+	}
+
+	// Create a marker file with cluster info
+	markerFile := fmt.Sprintf("%s/.clusterctl/initialized", mount)
+	timestamp := fmt.Sprintf("date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ")
+	cmd := fmt.Sprintf("echo \"GlusterFS initialized at $(%s)\" > %s", timestamp, markerFile)
+	log.Infow("creating initialization marker", "host", orchestrator, "file", markerFile, "command", cmd)
+	_, stderr, err := sshPool.Run(ctx, orchestrator, cmd)
+	if err != nil {
+		log.Warnw("failed to create marker file", "err", err, "stderr", stderr)
+	} else {
+		log.Infow("✅ initialization marker created", "file", markerFile)
+	}
+
+	// Verify directories exist on all workers
+	for _, worker := range workers {
+		cmd := fmt.Sprintf("ls -la %s/", mount)
+		log.Infow("verifying directory structure", "host", worker, "command", cmd)
+		stdout, stderr, err := sshPool.Run(ctx, worker, cmd)
+		if err != nil {
+			return fmt.Errorf("failed to verify directories on %s: %w (stderr: %s)", worker, err, stderr)
+		}
+		log.Infow("directory structure verified", "host", worker, "contents", "\n"+stdout)
+	}
+
+	log.Infow("✅ standard directory structure created and verified on all nodes")
 	return nil
 }
 

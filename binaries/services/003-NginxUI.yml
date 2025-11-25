@@ -1,11 +1,11 @@
 # NAME: NginxUI
 # DESCRIPTION: Nginx UI - Web-based Nginx management interface
-# ENABLED: false
+# ENABLED: true
 
 services:
   nginx-ui:
     image: 0xjacky/nginx-ui:latest
-    hostname: 'nginx-ui-{{.Task.Slot}}'
+    hostname: 'Nginx-UI-{{.Task.Slot}}'
     environment:
       TZ: UTC
     ports:
@@ -22,8 +22,8 @@ services:
         protocol: tcp
         mode: ingress
     volumes:
-      - /mnt/GlusterFS/Docker/Swarm/0001/data/NginxUI:/etc/nginx
-      - /mnt/GlusterFS/Docker/Swarm/0001/data/NginxUI/app:/app
+      - /mnt/GlusterFS/docker-swarm-0001/data/NginxUI:/etc/nginx
+      - /mnt/GlusterFS/docker-swarm-0001/data/NginxUI/app:/app
     networks:
       - DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION
       - DOCKER-SWARM-CLUSTER-EXTERNAL-INGRESS

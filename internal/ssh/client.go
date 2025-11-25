@@ -7,9 +7,12 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"clusterctl/internal/retry"
 )
 
 // Client wraps an SSH client connection for remote command execution.
@@ -77,29 +80,74 @@ func NewClient(ctx context.Context, host string, auth AuthConfig) (*Client, erro
 		addr = net.JoinHostPort(host, port)
 	}
 
-	// Dial with context support
-	dialer := &net.Dialer{
-		Timeout: 10 * time.Second,
-	}
+	// Dial with retry logic for transient network issues
+	retryCfg := retry.SSHConfig(fmt.Sprintf("ssh-connect-%s", host))
 
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	var client *ssh.Client
+	err := retry.Do(ctx, retryCfg, func() error {
+		dialer := &net.Dialer{
+			Timeout: 10 * time.Second,
+		}
+
+		conn, err := dialer.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			// Retry on connection refused, timeout, and network errors
+			if isRetryableNetworkError(err) {
+				return fmt.Errorf("failed to dial %s: %w", addr, err)
+			}
+			// Non-retryable error (e.g., invalid address)
+			return fmt.Errorf("failed to dial %s (non-retryable): %w", addr, err)
+		}
+
+		// Perform SSH handshake
+		sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
+		if err != nil {
+			conn.Close()
+			// Retry on authentication and handshake failures (key might not be installed yet)
+			if isRetryableSSHError(err) {
+				return fmt.Errorf("failed to establish ssh connection to %s: %w", addr, err)
+			}
+			// Non-retryable error
+			return fmt.Errorf("failed to establish ssh connection to %s (non-retryable): %w", addr, err)
+		}
+
+		client = ssh.NewClient(sshConn, chans, reqs)
+		return nil
+	})
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to dial %s: %w", addr, err)
+		return nil, err
 	}
-
-	// Perform SSH handshake
-	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to establish ssh connection to %s: %w", addr, err)
-	}
-
-	client := ssh.NewClient(sshConn, chans, reqs)
 
 	return &Client{
 		client: client,
 		host:   host,
 	}, nil
+}
+
+// isRetryableNetworkError checks if a network error is transient and should be retried.
+func isRetryableNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "temporary failure") ||
+		strings.Contains(errStr, "network is unreachable") ||
+		strings.Contains(errStr, "no route to host")
+}
+
+// isRetryableSSHError checks if an SSH error is transient and should be retried.
+func isRetryableSSHError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "unable to authenticate") ||
+		strings.Contains(errStr, "handshake failed") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "broken pipe")
 }
 
 // Run executes a command on the remote host and returns stdout, stderr, and error.

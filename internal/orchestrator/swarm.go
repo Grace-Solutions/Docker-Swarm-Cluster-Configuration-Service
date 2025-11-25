@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"clusterctl/internal/logging"
+	"clusterctl/internal/retry"
 	"clusterctl/internal/ssh"
 )
 
@@ -69,36 +70,59 @@ func initSwarm(ctx context.Context, sshPool *ssh.Pool, primaryManager, advertise
 		return nil
 	}
 
-	// Initialize swarm
-	cmd := fmt.Sprintf("docker swarm init --advertise-addr %s", advertiseAddr)
-	logging.L().Infow("initializing Docker Swarm", "host", primaryManager, "command", cmd)
-	stdout, stderr, err := sshPool.Run(ctx, primaryManager, cmd)
-	if err != nil {
-		return fmt.Errorf("failed to init swarm: %w (stderr: %s)", err, stderr)
-	}
+	// Initialize swarm with retry logic
+	retryCfg := retry.DefaultConfig(fmt.Sprintf("swarm-init-%s", primaryManager))
+	err = retry.Do(ctx, retryCfg, func() error {
+		cmd := fmt.Sprintf("docker swarm init --advertise-addr %s", advertiseAddr)
+		logging.L().Infow("initializing Docker Swarm", "host", primaryManager, "command", cmd)
+		stdout, stderr, err := sshPool.Run(ctx, primaryManager, cmd)
+		if err != nil {
+			// Check if it's already initialized (race condition)
+			if strings.Contains(stderr, "already part of a swarm") {
+				logging.L().Infow("swarm already initialized (detected during init)")
+				return nil
+			}
+			return fmt.Errorf("failed to init swarm: %w (stderr: %s)", err, stderr)
+		}
+		logging.L().Infow(fmt.Sprintf("✅ swarm initialized: %s", strings.TrimSpace(stdout)))
+		return nil
+	})
 
-	logging.L().Infow(fmt.Sprintf("✅ swarm initialized: %s", strings.TrimSpace(stdout)))
-	return nil
+	return err
 }
 
 func getJoinTokens(ctx context.Context, sshPool *ssh.Pool, primaryManager string) (managerToken, workerToken string, err error) {
-	// Get manager token
-	cmd := "docker swarm join-token manager -q"
-	logging.L().Infow("retrieving manager join token", "host", primaryManager, "command", cmd)
-	stdout, stderr, err := sshPool.Run(ctx, primaryManager, cmd)
+	// Get manager token with retry
+	retryCfg := retry.DefaultConfig("get-manager-token")
+	err = retry.Do(ctx, retryCfg, func() error {
+		cmd := "docker swarm join-token manager -q"
+		logging.L().Infow("retrieving manager join token", "host", primaryManager, "command", cmd)
+		stdout, stderr, err := sshPool.Run(ctx, primaryManager, cmd)
+		if err != nil {
+			return fmt.Errorf("failed to get manager token: %w (stderr: %s)", err, stderr)
+		}
+		managerToken = strings.TrimSpace(stdout)
+		return nil
+	})
 	if err != nil {
-		return "", "", fmt.Errorf("failed to get manager token: %w (stderr: %s)", err, stderr)
+		return "", "", err
 	}
-	managerToken = strings.TrimSpace(stdout)
 
-	// Get worker token
-	cmd = "docker swarm join-token worker -q"
-	logging.L().Infow("retrieving worker join token", "host", primaryManager, "command", cmd)
-	stdout, stderr, err = sshPool.Run(ctx, primaryManager, cmd)
+	// Get worker token with retry
+	retryCfg = retry.DefaultConfig("get-worker-token")
+	err = retry.Do(ctx, retryCfg, func() error {
+		cmd := "docker swarm join-token worker -q"
+		logging.L().Infow("retrieving worker join token", "host", primaryManager, "command", cmd)
+		stdout, stderr, err := sshPool.Run(ctx, primaryManager, cmd)
+		if err != nil {
+			return fmt.Errorf("failed to get worker token: %w (stderr: %s)", err, stderr)
+		}
+		workerToken = strings.TrimSpace(stdout)
+		return nil
+	})
 	if err != nil {
-		return "", "", fmt.Errorf("failed to get worker token: %w (stderr: %s)", err, stderr)
+		return "", "", err
 	}
-	workerToken = strings.TrimSpace(stdout)
 
 	return managerToken, workerToken, nil
 }
@@ -119,12 +143,32 @@ func joinNodes(ctx context.Context, sshPool *ssh.Pool, nodes []string, token, ma
 			continue
 		}
 
-		// Join swarm
-		cmd := fmt.Sprintf("docker swarm join --token %s %s", token, managerAddr)
-		logging.L().Infow("joining node to swarm", "host", node, "command", cmd)
-		stdout, stderr, err := sshPool.Run(ctx, node, cmd)
+		// Join swarm with retry logic
+		retryCfg := retry.DefaultConfig(fmt.Sprintf("swarm-join-%s", node))
+		err = retry.Do(ctx, retryCfg, func() error {
+			cmd := fmt.Sprintf("docker swarm join --token %s %s", token, managerAddr)
+			logging.L().Infow("joining node to swarm", "host", node, "command", cmd)
+			stdout, stderr, err := sshPool.Run(ctx, node, cmd)
+			if err != nil {
+				// Check if already joined (race condition)
+				if strings.Contains(stderr, "already part of a swarm") {
+					logging.L().Infow(fmt.Sprintf("%s: already joined swarm (detected during join)", node))
+					return nil
+				}
+				// Retry on network/connection errors
+				if strings.Contains(stderr, "Timeout") ||
+				   strings.Contains(stderr, "connection refused") ||
+				   strings.Contains(stderr, "no route to host") {
+					return fmt.Errorf("failed to join %s: %w (stderr: %s)", node, err, stderr)
+				}
+				// Non-retryable error
+				return fmt.Errorf("failed to join %s (non-retryable): %w (stderr: %s)", node, err, stderr)
+			}
+			logging.L().Infow(fmt.Sprintf("✅ %s joined swarm: %s", node, strings.TrimSpace(stdout)))
+			return nil
+		})
 		if err != nil {
-			return fmt.Errorf("failed to join %s: %w (stderr: %s)", node, err, stderr)
+			return err
 		}
 
 		logging.L().Infow(fmt.Sprintf("✅ %s: joined swarm: %s", node, strings.TrimSpace(stdout)))

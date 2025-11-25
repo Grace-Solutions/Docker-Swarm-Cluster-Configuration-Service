@@ -1,11 +1,11 @@
 {
   "globalSettings": {
-    "clusterName": "production-swarm",
+    "clusterName": "docker-swarm-0001",
     "overlayProvider": "netbird",
-    "overlayConfig": "your-netbird-setup-key-here",
+    "overlayConfig": "your-netbird-setup-key-here --allow-server-ssh --enable-ssh-remote-port-forwarding --enable-ssh-sftp --enable-ssh-root",
     "glusterVolume": "docker-swarm-0001",
-    "glusterMount": "/mnt/GlusterFS/Docker/Swarm/0001/data",
-    "glusterBrick": "/mnt/GlusterFS/Docker/Swarm/0001/brick",
+    "glusterMount": "/mnt/GlusterFS/docker-swarm-0001/data",
+    "glusterBrick": "/mnt/GlusterFS/docker-swarm-0001/brick",
     "servicesDir": "",
     "removeSSHPublicKeyOnCompletion": false,
     "preScripts": [
@@ -21,7 +21,7 @@
         "enabled": true,
         "name": "post-deployment-validation",
         "source": "https://example.com/scripts/post-validate.sh",
-        "parameters": ""
+        "parameters": "--verbose"
       }
     ]
   },
