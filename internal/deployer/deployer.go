@@ -25,11 +25,21 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 	var phasesCompleted int
 	var phasesFailed int
 
+	// Count enabled/disabled nodes
+	enabledNodes := getEnabledNodes(cfg)
+	disabledCount := len(cfg.Nodes) - len(enabledNodes)
+
 	log.Infow("🚀 Starting cluster deployment",
 		"clusterName", cfg.GlobalSettings.ClusterName,
-		"nodes", len(cfg.Nodes),
+		"totalNodes", len(cfg.Nodes),
+		"enabledNodes", len(enabledNodes),
+		"disabledNodes", disabledCount,
 		"startTime", startTime.Format(time.RFC3339),
 	)
+
+	if len(enabledNodes) == 0 {
+		return fmt.Errorf("no enabled nodes found in configuration")
+	}
 
 	// Phase 1: Prepare SSH keys and connection pool
 	log.Infow("Phase 1: Preparing SSH keys and connections")
@@ -272,9 +282,11 @@ func Teardown(ctx context.Context, cfg *config.Config, removeOverlays, removeGlu
 func prepareSSHKeys(cfg *config.Config) (*sshkeys.KeyPair, error) {
 	log := logging.L().With("component", "ssh-keys")
 
-	// Check if any nodes use automatic key pair
+	enabledNodes := getEnabledNodes(cfg)
+
+	// Check if any enabled nodes use automatic key pair
 	needsKeyPair := false
-	for _, node := range cfg.Nodes {
+	for _, node := range enabledNodes {
 		if node.UseSSHAutomaticKeyPair {
 			needsKeyPair = true
 			break
@@ -294,13 +306,13 @@ func prepareSSHKeys(cfg *config.Config) (*sshkeys.KeyPair, error) {
 
 	log.Infow("SSH key pair ready", "privateKey", keyPair.PrivateKeyPath)
 
-	// Install public key on nodes that don't use automatic key pair
+	// Install public key on enabled nodes that don't use automatic key pair
 	// (these nodes will use password/privateKeyPath for initial connection)
 	ctx := context.Background()
 
 	// Count nodes that need public key installation
 	var nodesToInstall []config.NodeConfig
-	for _, node := range cfg.Nodes {
+	for _, node := range enabledNodes {
 		if !node.UseSSHAutomaticKeyPair {
 			nodesToInstall = append(nodesToInstall, node)
 		}
@@ -362,20 +374,27 @@ func createSSHPool(cfg *config.Config, keyPair *sshkeys.KeyPair) (*ssh.Pool, err
 	log := logging.L().With("phase", "ssh-pool")
 	authConfigs := make(map[string]ssh.AuthConfig)
 
-	totalNodes := len(cfg.Nodes)
-	log.Infow("creating SSH connection pool", "totalNodes", totalNodes)
+	enabledNodes := getEnabledNodes(cfg)
+	log.Infow("creating SSH connection pool", "totalNodes", len(enabledNodes))
 
-	for i, node := range cfg.Nodes {
+	// Count auth methods
+	var autoKeyCount, privateKeyCount, passwordCount int
+
+	for i, node := range enabledNodes {
 		nodeNum := i + 1
 		authMethod := "password"
 		if node.UseSSHAutomaticKeyPair && keyPair != nil {
 			authMethod = "automatic-keypair"
+			autoKeyCount++
 		} else if node.PrivateKeyPath != "" {
 			authMethod = "private-key"
+			privateKeyCount++
+		} else {
+			passwordCount++
 		}
 
 		nodeLog := log.With(
-			"server", fmt.Sprintf("%d/%d", nodeNum, totalNodes),
+			"server", fmt.Sprintf("%d/%d", nodeNum, len(enabledNodes)),
 			"hostname", node.Hostname,
 			"user", node.Username,
 			"port", node.SSHPort,
@@ -392,36 +411,41 @@ func createSSHPool(cfg *config.Config, keyPair *sshkeys.KeyPair) (*ssh.Pool, err
 		if node.UseSSHAutomaticKeyPair && keyPair != nil {
 			// Use automatic key pair
 			authConfig.PrivateKeyPath = keyPair.PrivateKeyPath
-			nodeLog.Infow("✓ using automatic SSH key pair", "keyPath", keyPair.PrivateKeyPath)
 		} else {
 			// Use configured credentials
 			authConfig.Password = node.Password
 			authConfig.PrivateKeyPath = node.PrivateKeyPath
-			if node.PrivateKeyPath != "" {
-				nodeLog.Infow("✓ using configured private key", "keyPath", node.PrivateKeyPath)
-			} else {
-				nodeLog.Infow("✓ using password authentication")
-			}
 		}
 
 		authConfigs[node.Hostname] = authConfig
 	}
 
-	log.Infow("SSH connection pool configured", "totalNodes", totalNodes)
+	// Log summary once instead of per-node
+	if autoKeyCount > 0 {
+		log.Infow("✓ using automatic SSH key pair", "nodes", autoKeyCount, "keyPath", keyPair.PrivateKeyPath)
+	}
+	if privateKeyCount > 0 {
+		log.Infow("✓ using configured private keys", "nodes", privateKeyCount)
+	}
+	if passwordCount > 0 {
+		log.Infow("✓ using password authentication", "nodes", passwordCount)
+	}
+
+	log.Infow("SSH connection pool configured", "totalNodes", len(enabledNodes))
 	return ssh.NewPool(authConfigs), nil
 }
 
-// installDependencies installs required dependencies on all nodes.
+// installDependencies installs required dependencies on all enabled nodes.
 func installDependencies(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool) error {
 	log := logging.L().With("phase", "dependencies")
 
-	totalNodes := len(cfg.Nodes)
-	log.Infow("installing dependencies on all nodes", "totalNodes", totalNodes)
+	enabledNodes := getEnabledNodes(cfg)
+	log.Infow("installing dependencies on all nodes", "totalNodes", len(enabledNodes))
 
-	for i, node := range cfg.Nodes {
+	for i, node := range enabledNodes {
 		nodeNum := i + 1
 		nodeLog := log.With(
-			"server", fmt.Sprintf("%d/%d", nodeNum, totalNodes),
+			"server", fmt.Sprintf("%d/%d", nodeNum, len(enabledNodes)),
 			"hostname", node.Hostname,
 			"role", node.Role,
 			"user", node.Username,
@@ -500,7 +524,7 @@ func installGlusterFS(ctx context.Context, sshPool *ssh.Pool, host string, serve
 	return nil
 }
 
-// configureOverlay configures the overlay network on all nodes idempotently.
+// configureOverlay configures the overlay network on all enabled nodes idempotently.
 func configureOverlay(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool) error {
 	log := logging.L().With("phase", "overlay")
 
@@ -511,14 +535,14 @@ func configureOverlay(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool
 	}
 
 	overlayConfig := cfg.GlobalSettings.OverlayConfig
-	totalNodes := len(cfg.Nodes)
-	log.Infow("configuring overlay network", "provider", provider, "totalNodes", totalNodes)
+	enabledNodes := getEnabledNodes(cfg)
+	log.Infow("configuring overlay network", "provider", provider, "totalNodes", len(enabledNodes))
 
-	// Configure overlay on all nodes
-	for i, node := range cfg.Nodes {
+	// Configure overlay on all enabled nodes
+	for i, node := range enabledNodes {
 		nodeNum := i + 1
 		nodeLog := log.With(
-			"server", fmt.Sprintf("%d/%d", nodeNum, totalNodes),
+			"server", fmt.Sprintf("%d/%d", nodeNum, len(enabledNodes)),
 			"hostname", node.Hostname,
 			"provider", provider,
 			"user", node.Username,
@@ -674,10 +698,22 @@ fi
 	return nil
 }
 
-// getGlusterWorkers returns the hostnames of all workers with GlusterFS enabled.
+// getEnabledNodes returns only enabled nodes from the configuration.
+func getEnabledNodes(cfg *config.Config) []config.NodeConfig {
+	var enabled []config.NodeConfig
+	for _, node := range cfg.Nodes {
+		if node.IsEnabled() {
+			enabled = append(enabled, node)
+		}
+	}
+	return enabled
+}
+
+// getGlusterWorkers returns the hostnames of all enabled workers with GlusterFS enabled.
 func getGlusterWorkers(cfg *config.Config) []string {
 	var workers []string
-	for _, node := range cfg.Nodes {
+	enabledNodes := getEnabledNodes(cfg)
+	for _, node := range enabledNodes {
 		if node.Role == "worker" && node.GlusterEnabled {
 			workers = append(workers, node.Hostname)
 		}
@@ -685,9 +721,10 @@ func getGlusterWorkers(cfg *config.Config) []string {
 	return workers
 }
 
-// categorizeNodes returns managers and workers.
+// categorizeNodes returns enabled managers and workers.
 func categorizeNodes(cfg *config.Config) (managers []string, workers []string) {
-	for _, node := range cfg.Nodes {
+	enabledNodes := getEnabledNodes(cfg)
+	for _, node := range enabledNodes {
 		if node.Role == "manager" {
 			managers = append(managers, node.Hostname)
 		} else if node.Role == "worker" {
@@ -697,13 +734,14 @@ func categorizeNodes(cfg *config.Config) (managers []string, workers []string) {
 	return
 }
 
-// setHostnames sets hostnames on nodes if configured.
+// setHostnames sets hostnames on enabled nodes if configured.
 func setHostnames(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool) error {
 	log := logging.L().With("phase", "hostnames")
 
-	// Count nodes that need hostname changes
+	// Count enabled nodes that need hostname changes
 	var nodesToUpdate []config.NodeConfig
-	for _, node := range cfg.Nodes {
+	enabledNodes := getEnabledNodes(cfg)
+	for _, node := range enabledNodes {
 		if node.NewHostname != "" {
 			nodesToUpdate = append(nodesToUpdate, node)
 		}
@@ -777,9 +815,10 @@ func executeScripts(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool, 
 		)
 		scriptLog.Infow("→ executing script")
 
-		// Count nodes that will execute this script
+		// Count enabled nodes that will execute this script
 		var targetNodes []config.NodeConfig
-		for _, node := range cfg.Nodes {
+		enabledNodes := getEnabledNodes(cfg)
+		for _, node := range enabledNodes {
 			if node.ScriptsEnabled {
 				targetNodes = append(targetNodes, node)
 			}

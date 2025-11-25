@@ -37,6 +37,9 @@ type GlobalSettings struct {
 
 // NodeConfig represents a single node's configuration.
 type NodeConfig struct {
+	// Node Control
+	Enabled *bool `json:"enabled"` // Enable this node for deployment (default: true if nil)
+
 	// SSH Connection Settings
 	Hostname              string `json:"hostname"`              // Hostname or IP address (required)
 	Username              string `json:"username"`              // SSH username (required, default: "root")
@@ -172,6 +175,12 @@ func (c *Config) ApplyDefaults() {
 
 	// Node defaults
 	for i := range c.Nodes {
+		// Enabled defaults to true if not explicitly set
+		if c.Nodes[i].Enabled == nil {
+			enabled := true
+			c.Nodes[i].Enabled = &enabled
+		}
+
 		// SSH defaults
 		if c.Nodes[i].Username == "" {
 			c.Nodes[i].Username = "root"
@@ -188,6 +197,14 @@ func (c *Config) ApplyDefaults() {
 			c.Nodes[i].GlusterBrick = c.GlobalSettings.GlusterBrick
 		}
 	}
+}
+
+// IsEnabled returns true if the node is enabled for deployment.
+func (n *NodeConfig) IsEnabled() bool {
+	if n.Enabled == nil {
+		return true // Default to enabled
+	}
+	return *n.Enabled
 }
 
 // GetEffectiveGlusterMount returns the effective GlusterFS mount path for a node.

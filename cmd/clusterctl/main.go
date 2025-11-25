@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"clusterctl/internal/config"
@@ -51,6 +53,47 @@ func main() {
 func withSignals(parent context.Context) context.Context {
 	ctx, _ := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 	return ctx
+}
+
+// formatError formats a nested error with each level on a separate line
+func formatError(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	var lines []string
+	current := err
+
+	for current != nil {
+		// Get the error message
+		msg := current.Error()
+
+		// Try to unwrap
+		unwrapped := errors.Unwrap(current)
+
+		if unwrapped != nil {
+			// Remove the wrapped part from the message
+			unwrappedMsg := unwrapped.Error()
+			if strings.HasSuffix(msg, ": "+unwrappedMsg) {
+				msg = strings.TrimSuffix(msg, ": "+unwrappedMsg)
+			}
+		}
+
+		lines = append(lines, msg)
+		current = unwrapped
+	}
+
+	// Format with indentation
+	var formatted strings.Builder
+	for i, line := range lines {
+		if i > 0 {
+			formatted.WriteString("\n  ")
+			formatted.WriteString(strings.Repeat("→ ", i))
+		}
+		formatted.WriteString(line)
+	}
+
+	return formatted.String()
 }
 
 func usage() {
@@ -100,7 +143,8 @@ func runDeploy(ctx context.Context, configPath string, dryRun bool) {
 	log.Infow("loading configuration", "configPath", configPath)
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		log.Errorw("failed to load configuration", "err", err)
+		log.Errorw("failed to load configuration")
+		fmt.Fprintf(os.Stderr, "\nError:\n  %s\n\n", formatError(err))
 		os.Exit(1)
 	}
 
@@ -117,7 +161,8 @@ func runDeploy(ctx context.Context, configPath string, dryRun bool) {
 
 	// Run deployment
 	if err := deployer.Deploy(ctx, cfg); err != nil {
-		log.Errorw("deployment failed", "err", err)
+		log.Errorw("deployment failed")
+		fmt.Fprintf(os.Stderr, "\nError:\n  %s\n\n", formatError(err))
 		os.Exit(1)
 	}
 
@@ -131,7 +176,8 @@ func runTeardown(ctx context.Context, configPath string, removeOverlays, removeG
 	log.Infow("loading configuration", "configPath", configPath)
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		log.Errorw("failed to load configuration", "err", err)
+		log.Errorw("failed to load configuration")
+		fmt.Fprintf(os.Stderr, "\nError:\n  %s\n\n", formatError(err))
 		os.Exit(1)
 	}
 
@@ -144,7 +190,8 @@ func runTeardown(ctx context.Context, configPath string, removeOverlays, removeG
 
 	// Run teardown
 	if err := deployer.Teardown(ctx, cfg, removeOverlays, removeGlusterData); err != nil {
-		log.Errorw("teardown failed", "err", err)
+		log.Errorw("teardown failed")
+		fmt.Fprintf(os.Stderr, "\nError:\n  %s\n\n", formatError(err))
 		os.Exit(1)
 	}
 
