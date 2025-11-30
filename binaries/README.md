@@ -125,12 +125,37 @@ The `setRootPassword` parameter allows you to set a consistent root password acr
 
 ## SSH Key Management
 
-The tool automatically generates and manages ED25519 SSH keys:
+The tool automatically generates and manages ED25519 SSH keys for passwordless authentication:
 
-- Keys are stored in `sshkeys/yyyy.MM.dd.HHmm/` next to the binary
-- Existing keys are reused across deployments
-- Keys are never deleted (kept for future use)
-- Per-node control via `useSSHAutomaticKeyPair` setting
+### How It Works
+
+1. **Key Generation**: Tool always generates an SSH key pair (stored in `sshkeys/yyyy.MM.dd.HHmm/`)
+2. **Key Installation**: Public key is installed to `~/.ssh/authorized_keys` for the configured username
+3. **Authentication Priority** (per node):
+   - If `useSSHAutomaticKeyPair: true` → Uses generated key (overrides password/privateKeyPath)
+   - Else if `privateKeyPath` is set → Uses that private key
+   - Else → Uses password authentication
+
+### Key Features
+
+- ✅ Keys stored in `sshkeys/yyyy.MM.dd.HHmm/` next to the binary
+- ✅ Existing keys are reused across deployments
+- ✅ Keys are never deleted (kept for future use)
+- ✅ Public key installed on **all nodes** (even those using password initially)
+- ✅ Enables passwordless SSH for future operations
+- ✅ Maps to the `username` specified in node config (e.g., `root`, `ubuntu`, etc.)
+
+### Important Notes
+
+**Root Access Required:**
+- All nodes must have root privileges (either direct `root` user or passwordless `sudo`)
+- Commands like `hostnamectl`, `chpasswd`, Docker, and GlusterFS require root access
+- If using non-root user (e.g., `ubuntu`), ensure passwordless sudo is configured
+
+**SSH Key User Mapping:**
+- Public key is installed for the `username` specified in node config
+- Example: If `username: "ubuntu"`, key authenticates as `ubuntu` user
+- Example: If `username: "root"`, key authenticates as `root` user
 
 ## Examples
 

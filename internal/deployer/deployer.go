@@ -824,8 +824,8 @@ func setHostnames(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool) er
 			continue
 		}
 
-		// Set hostname idempotently (use sudo for non-root users)
-		setCmd := fmt.Sprintf("sudo hostnamectl set-hostname %s", node.NewHostname)
+		// Set hostname idempotently
+		setCmd := fmt.Sprintf("hostnamectl set-hostname %s", node.NewHostname)
 		nodeLog.Infow("→ executing hostname change", "command", setCmd)
 
 		if _, stderr, err := sshPool.Run(ctx, node.Hostname, setCmd); err != nil {
@@ -862,9 +862,9 @@ func setRootPassword(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool)
 
 		nodeLog.Infow("→ setting root password")
 
-		// Use chpasswd to set password (use sudo for non-root users)
+		// Use chpasswd to set password
 		// Format: username:password
-		setCmd := fmt.Sprintf("echo 'root:%s' | sudo chpasswd", password)
+		setCmd := fmt.Sprintf("echo 'root:%s' | chpasswd", password)
 
 		if _, stderr, err := sshPool.Run(ctx, node.Hostname, setCmd); err != nil {
 			return fmt.Errorf("failed to set root password on %s: %w (stderr: %s)", node.Hostname, err, stderr)
