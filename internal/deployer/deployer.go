@@ -137,7 +137,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 
 	// Phase 9: Deploy services from YAML files
 	log.Infow("Phase 9: Deploying services")
-	metrics, err := services.DeployServices(ctx, sshPool, primaryMaster, cfg.GlobalSettings.ServicesDir)
+	metrics, err := services.DeployServices(ctx, sshPool, primaryMaster, cfg.GlobalSettings.ServicesDir, cfg.GlobalSettings.GlusterMount)
 	if err != nil {
 		log.Warnw("service deployment encountered errors", "error", err)
 	}

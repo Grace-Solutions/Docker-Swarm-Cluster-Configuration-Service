@@ -87,12 +87,30 @@ networks:
 
 ## Storage
 
-For persistent storage, use GlusterFS mount paths:
+For persistent storage, use GlusterFS mount paths. The tool automatically replaces GlusterFS paths with your configured `glusterMount` path from the configuration file.
 
+**Pattern Matching:**
+The tool uses regex to find and replace common GlusterFS path patterns:
+- `/mnt/GlusterFS/<cluster-name>/data` → Replaced with your `glusterMount`
+- `/mnt/glusterfs/<cluster-name>/data` → Replaced with your `glusterMount`
+
+**Example:**
 ```yaml
 volumes:
-  - /mnt/GlusterFS/Docker/Swarm/0001/data/YourService:/data
+  - /mnt/GlusterFS/docker-swarm-0001/data/YourService:/data
 ```
+
+If your config has `"glusterMount": "/mnt/GlusterFS/my-cluster/data"`, the path will be automatically replaced to:
+```yaml
+volumes:
+  - /mnt/GlusterFS/my-cluster/data/YourService:/data
+```
+
+**Benefits:**
+- ✅ Write service YAMLs once with any GlusterFS path pattern
+- ✅ Paths automatically adapt to your cluster configuration
+- ✅ No manual editing needed when changing mount paths
+- ✅ Services remain portable across different cluster configurations
 
 ## Deployment Logs
 

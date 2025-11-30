@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -144,7 +145,7 @@ func parseServiceMetadata(filePath, fileName string) (ServiceMetadata, error) {
 }
 
 // DeployServices deploys all enabled services to the Docker Swarm cluster
-func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, servicesDir string) (*DeploymentMetrics, error) {
+func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, servicesDir string, glusterMount string) (*DeploymentMetrics, error) {
 	log := logging.L().With("component", "services")
 	metrics := &DeploymentMetrics{
 		StartTime: time.Now(),
@@ -202,7 +203,7 @@ func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string
 			"file", svc.FileName,
 		)
 
-		if err := deployService(ctx, sshPool, primaryMaster, svc); err != nil {
+		if err := deployService(ctx, sshPool, primaryMaster, svc, glusterMount); err != nil {
 			log.Errorw(fmt.Sprintf("failed to deploy service %d/%d", i+1, metrics.TotalFound),
 				"name", svc.Name,
 				"error", err,
@@ -234,7 +235,7 @@ func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string
 }
 
 // deployService deploys a single service to the Docker Swarm cluster
-func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, svc ServiceMetadata) error {
+func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, svc ServiceMetadata, glusterMount string) error {
 	log := logging.L().With("component", "services", "service", svc.Name)
 
 	// Read service file
@@ -243,11 +244,18 @@ func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string,
 		return fmt.Errorf("failed to read service file: %w", err)
 	}
 
+	// Replace GlusterFS mount paths if glusterMount is specified
+	processedContent := string(content)
+	if glusterMount != "" {
+		processedContent = replaceGlusterPaths(processedContent, glusterMount)
+		log.Infow("replaced GlusterFS mount paths", "glusterMount", glusterMount)
+	}
+
 	// Create temporary file on remote host
 	remoteFile := fmt.Sprintf("/tmp/clusterctl-service-%s.yml", svc.Name)
 
 	// Write content to remote file
-	writeCmd := fmt.Sprintf("cat > %s << 'CLUSTERCTL_EOF'\n%s\nCLUSTERCTL_EOF", remoteFile, string(content))
+	writeCmd := fmt.Sprintf("cat > %s << 'CLUSTERCTL_EOF'\n%s\nCLUSTERCTL_EOF", remoteFile, processedContent)
 
 	log.Infow("uploading service definition", "host", primaryMaster, "remoteFile", remoteFile, "size", len(content))
 
@@ -274,5 +282,23 @@ func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string,
 	}
 
 	return nil
+}
+
+// replaceGlusterPaths replaces GlusterFS mount paths in YAML content with the configured path.
+// It uses regex to match common GlusterFS path patterns and replaces them with the configured glusterMount.
+func replaceGlusterPaths(content string, glusterMount string) string {
+	// Common GlusterFS path patterns to replace:
+	// - /mnt/GlusterFS/...
+	// - /mnt/glusterfs/...
+	// - /data/gluster/...
+	// Match pattern: /mnt/GlusterFS/<anything>/data or /mnt/glusterfs/<anything>/data
+	// Replace with: <glusterMount>
+
+	// Use regex to find and replace GlusterFS paths
+	// Pattern matches: /mnt/GlusterFS/[cluster-name]/data or /mnt/glusterfs/[cluster-name]/data
+	re := regexp.MustCompile(`/mnt/[Gg]luster[Ff][Ss]/[^/]+/data`)
+	replaced := re.ReplaceAllString(content, glusterMount)
+
+	return replaced
 }
 
