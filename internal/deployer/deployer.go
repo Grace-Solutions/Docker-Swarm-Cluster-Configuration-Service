@@ -343,7 +343,7 @@ func prepareSSHKeys(cfg *config.Config) (*sshkeys.KeyPair, error) {
 			"authMethod", authMethod,
 		)
 
-		nodeLog.Infow("→ installing public key for future automatic authentication")
+		nodeLog.Infow(fmt.Sprintf("→ [%s] installing public key for future automatic authentication", node.Hostname))
 
 		authConfig := ssh.AuthConfig{
 			Username:       node.Username,
@@ -366,9 +366,9 @@ func prepareSSHKeys(cfg *config.Config) (*sshkeys.KeyPair, error) {
 		)
 
 		if _, stderr, err := tempPool.Run(ctx, node.Hostname, installCmd); err != nil {
-			nodeLog.Warnw("✗ failed to install public key", "error", err, "stderr", stderr)
+			nodeLog.Warnw(fmt.Sprintf("✗ [%s] failed to install public key", node.Hostname), "error", err, "stderr", stderr)
 		} else {
-			nodeLog.Infow("✓ public key installed successfully")
+			nodeLog.Infow(fmt.Sprintf("✓ [%s] public key installed successfully", node.Hostname))
 		}
 	}
 
@@ -407,7 +407,7 @@ func createSSHPool(cfg *config.Config, keyPair *sshkeys.KeyPair) (*ssh.Pool, err
 			"authMethod", authMethod,
 		)
 
-		nodeLog.Infow("→ configuring SSH connection")
+		nodeLog.Infow(fmt.Sprintf("→ [%s] configuring SSH connection", node.Hostname))
 
 		authConfig := ssh.AuthConfig{
 			Username: node.Username,
@@ -458,32 +458,32 @@ func installDependencies(ctx context.Context, cfg *config.Config, sshPool *ssh.P
 			"port", node.SSHPort,
 		)
 
-		nodeLog.Infow("→ starting dependency installation")
+		nodeLog.Infow(fmt.Sprintf("→ [%s] starting dependency installation", node.Hostname))
 
 		// Install Docker
-		nodeLog.Infow("→ installing Docker")
+		nodeLog.Infow(fmt.Sprintf("→ [%s] installing Docker", node.Hostname))
 		if err := installDocker(ctx, sshPool, node.Hostname); err != nil {
 			return fmt.Errorf("failed to install Docker on %s: %w", node.Hostname, err)
 		}
-		nodeLog.Infow("✓ Docker installed")
+		nodeLog.Infow(fmt.Sprintf("✓ [%s] Docker installed", node.Hostname))
 
 		// Install GlusterFS if needed
 		if node.GlusterEnabled {
-			nodeLog.Infow("→ installing GlusterFS server")
+			nodeLog.Infow(fmt.Sprintf("→ [%s] installing GlusterFS server", node.Hostname))
 			if err := installGlusterFS(ctx, sshPool, node.Hostname, true); err != nil {
 				return fmt.Errorf("failed to install GlusterFS on %s: %w", node.Hostname, err)
 			}
-			nodeLog.Infow("✓ GlusterFS server installed")
+			nodeLog.Infow(fmt.Sprintf("✓ [%s] GlusterFS server installed", node.Hostname))
 		} else if node.Role == "manager" && len(getGlusterWorkers(cfg)) > 0 {
 			// Managers need GlusterFS client if any workers have GlusterFS
-			nodeLog.Infow("→ installing GlusterFS client")
+			nodeLog.Infow(fmt.Sprintf("→ [%s] installing GlusterFS client", node.Hostname))
 			if err := installGlusterFS(ctx, sshPool, node.Hostname, false); err != nil {
 				return fmt.Errorf("failed to install GlusterFS client on %s: %w", node.Hostname, err)
 			}
-			nodeLog.Infow("✓ GlusterFS client installed")
+			nodeLog.Infow(fmt.Sprintf("✓ [%s] GlusterFS client installed", node.Hostname))
 		}
 
-		nodeLog.Infow("✓ all dependencies installed")
+		nodeLog.Infow(fmt.Sprintf("✓ [%s] all dependencies installed", node.Hostname))
 	}
 
 	return nil
@@ -572,11 +572,11 @@ func configureOverlay(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool
 			"port", node.SSHPort,
 		)
 
-		nodeLog.Infow("→ configuring overlay network")
+		nodeLog.Infow(fmt.Sprintf("→ [%s] configuring overlay network", node.Hostname))
 		if err := configureOverlayOnNode(ctx, sshPool, node, provider, overlayConfig); err != nil {
 			return fmt.Errorf("failed to configure %s overlay on %s: %w", provider, node.Hostname, err)
 		}
-		nodeLog.Infow("✓ overlay network configured")
+		nodeLog.Infow(fmt.Sprintf("✓ [%s] overlay network configured", node.Hostname))
 	}
 
 	log.Infow("✅ overlay network configured", "provider", provider)
@@ -815,24 +815,24 @@ func setHostnames(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool) er
 			"port", node.SSHPort,
 		)
 
-		nodeLog.Infow("→ checking current hostname")
+		nodeLog.Infow(fmt.Sprintf("→ [%s] checking current hostname", node.Hostname))
 
 		// Check current hostname
 		stdout, _, err := sshPool.Run(ctx, node.Hostname, "hostname")
 		if err == nil && stdout == node.NewHostname+"\n" {
-			nodeLog.Infow("✓ hostname already set, skipping")
+			nodeLog.Infow(fmt.Sprintf("✓ [%s] hostname already set, skipping", node.Hostname))
 			continue
 		}
 
 		// Set hostname idempotently
 		setCmd := fmt.Sprintf("hostnamectl set-hostname %s", node.NewHostname)
-		nodeLog.Infow("→ executing hostname change", "command", setCmd)
+		nodeLog.Infow(fmt.Sprintf("→ [%s] executing hostname change", node.Hostname), "command", setCmd)
 
 		if _, stderr, err := sshPool.Run(ctx, node.Hostname, setCmd); err != nil {
 			return fmt.Errorf("failed to set hostname on %s: %w (stderr: %s)", node.Hostname, err, stderr)
 		}
 
-		nodeLog.Infow("✓ hostname set successfully")
+		nodeLog.Infow(fmt.Sprintf("✓ [%s] hostname set successfully", node.Hostname))
 	}
 
 	return nil
@@ -860,7 +860,7 @@ func setRootPassword(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool)
 			"port", node.SSHPort,
 		)
 
-		nodeLog.Infow("→ setting root password")
+		nodeLog.Infow(fmt.Sprintf("→ [%s] setting root password", node.Hostname))
 
 		// Use chpasswd to set password
 		// Format: username:password
@@ -870,7 +870,7 @@ func setRootPassword(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool)
 			return fmt.Errorf("failed to set root password on %s: %w (stderr: %s)", node.Hostname, err, stderr)
 		}
 
-		nodeLog.Infow("✓ root password set successfully")
+		nodeLog.Infow(fmt.Sprintf("✓ [%s] root password set successfully", node.Hostname))
 	}
 
 	return nil
@@ -887,13 +887,21 @@ func executeScripts(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool, 
 
 	// Count enabled scripts
 	var enabledScripts []config.ScriptConfig
+	var disabledCount int
 	for _, script := range scripts {
 		if script.Enabled {
 			enabledScripts = append(enabledScripts, script)
+		} else {
+			disabledCount++
+			log.Infow("skipping disabled script", "name", script.Name, "enabled", false)
 		}
 	}
 
-	log.Infow("executing scripts", "totalScripts", len(enabledScripts))
+	if disabledCount > 0 {
+		log.Infow("script summary", "totalScripts", len(scripts), "enabled", len(enabledScripts), "disabled", disabledCount)
+	} else {
+		log.Infow("executing scripts", "totalScripts", len(enabledScripts))
+	}
 
 	for i, script := range enabledScripts {
 		scriptNum := i + 1
@@ -944,11 +952,11 @@ func executeScripts(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool, 
 				"port", node.SSHPort,
 			)
 
-			nodeLog.Infow("→ executing script on node")
+			nodeLog.Infow(fmt.Sprintf("→ [%s] executing script on node", node.Hostname))
 			if err := executeScriptOnNode(ctx, sshPool, node, script); err != nil {
 				return fmt.Errorf("failed to execute script %s on %s: %w", script.Name, node.Hostname, err)
 			}
-			nodeLog.Infow("✓ script executed successfully on node")
+			nodeLog.Infow(fmt.Sprintf("✓ [%s] script executed successfully on node", node.Hostname))
 		}
 
 		scriptLog.Infow("✓ script executed successfully on all nodes")
@@ -1011,15 +1019,15 @@ func rebootNodes(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool) err
 		}
 
 		nodeLog := log.With("node", node.Hostname)
-		nodeLog.Infow("initiating reboot with 15 second delay")
+		nodeLog.Infow(fmt.Sprintf("→ [%s] initiating reboot with 15 second delay", node.Hostname))
 
 		// Initiate reboot with 15 second delay and terminate SSH connection cleanly
 		rebootCmd := "nohup sh -c 'sleep 15 && reboot' > /dev/null 2>&1 &"
 		if _, stderr, err := sshPool.Run(ctx, node.Hostname, rebootCmd); err != nil {
 			// Ignore errors as the connection may be terminated
-			nodeLog.Infow("reboot initiated (connection may have terminated)", "stderr", stderr)
+			nodeLog.Infow(fmt.Sprintf("✓ [%s] reboot initiated (connection may have terminated)", node.Hostname), "stderr", stderr)
 		} else {
-			nodeLog.Infow("reboot scheduled successfully")
+			nodeLog.Infow(fmt.Sprintf("✓ [%s] reboot scheduled successfully", node.Hostname))
 		}
 	}
 
@@ -1118,7 +1126,7 @@ func applyNodeLabels(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool,
 		}
 
 		// Apply labels to the node
-		nodeLog.Infow("applying labels", "count", len(labels))
+		nodeLog.Infow(fmt.Sprintf("→ [%s] applying labels", node.Hostname), "count", len(labels))
 		for key, value := range labels {
 			// Escape special characters in label values
 			escapedValue := strings.ReplaceAll(value, `"`, `\"`)
@@ -1126,13 +1134,13 @@ func applyNodeLabels(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool,
 				key, escapedValue, node.Hostname)
 
 			if _, stderr, err := sshPool.Run(ctx, primaryMaster, labelCmd); err != nil {
-				nodeLog.Warnw("failed to apply label", "key", key, "value", value, "error", err, "stderr", stderr)
+				nodeLog.Warnw(fmt.Sprintf("✗ [%s] failed to apply label", node.Hostname), "key", key, "value", value, "error", err, "stderr", stderr)
 			} else {
-				nodeLog.Debugw("label applied", "key", key, "value", value)
+				nodeLog.Debugw(fmt.Sprintf("✓ [%s] label applied", node.Hostname), "key", key, "value", value)
 			}
 		}
 
-		nodeLog.Infow("labels applied successfully", "total", len(labels))
+		nodeLog.Infow(fmt.Sprintf("✓ [%s] labels applied successfully", node.Hostname), "total", len(labels))
 	}
 
 	log.Infow("all node labels applied")
@@ -1149,7 +1157,7 @@ func removeSSHPublicKeyFromNodes(ctx context.Context, cfg *config.Config, sshPoo
 
 	for _, node := range cfg.Nodes {
 		nodeLog := log.With("node", node.Hostname)
-		nodeLog.Infow("removing public key from node")
+		nodeLog.Infow(fmt.Sprintf("→ [%s] removing public key from node", node.Hostname))
 
 		// Remove the public key from authorized_keys
 		removeCmd := fmt.Sprintf(
@@ -1158,9 +1166,9 @@ func removeSSHPublicKeyFromNodes(ctx context.Context, cfg *config.Config, sshPoo
 		)
 
 		if _, stderr, err := sshPool.Run(ctx, node.Hostname, removeCmd); err != nil {
-			nodeLog.Warnw("failed to remove public key", "error", err, "stderr", stderr)
+			nodeLog.Warnw(fmt.Sprintf("✗ [%s] failed to remove public key", node.Hostname), "error", err, "stderr", stderr)
 		} else {
-			nodeLog.Infow("public key removed successfully")
+			nodeLog.Infow(fmt.Sprintf("✓ [%s] public key removed successfully", node.Hostname))
 		}
 	}
 
