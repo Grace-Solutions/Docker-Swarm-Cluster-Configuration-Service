@@ -303,21 +303,8 @@ func prepareSSHKeys(cfg *config.Config) (*sshkeys.KeyPair, error) {
 
 	enabledNodes := getEnabledNodes(cfg)
 
-	// Check if any enabled nodes use automatic key pair
-	needsKeyPair := false
-	for _, node := range enabledNodes {
-		if node.UseSSHAutomaticKeyPair {
-			needsKeyPair = true
-			break
-		}
-	}
-
-	if !needsKeyPair {
-		log.Infow("no nodes use automatic SSH key pair, skipping key generation")
-		return nil, nil
-	}
-
-	// Ensure key pair exists (generate if needed)
+	// Always generate SSH key pair for future passwordless access
+	// Even if nodes currently use password auth, we'll install the key for subsequent operations
 	keyPair, err := sshkeys.EnsureKeyPair("")
 	if err != nil {
 		return nil, fmt.Errorf("failed to ensure SSH key pair: %w", err)
@@ -325,8 +312,8 @@ func prepareSSHKeys(cfg *config.Config) (*sshkeys.KeyPair, error) {
 
 	log.Infow("SSH key pair ready", "privateKey", keyPair.PrivateKeyPath)
 
-	// Install public key on enabled nodes that don't use automatic key pair
-	// (these nodes will use password/privateKeyPath for initial connection)
+	// Install public key on enabled nodes that don't already use automatic key pair
+	// (these nodes will use password/privateKeyPath for initial connection, then key for future)
 	ctx := context.Background()
 
 	// Count nodes that need public key installation
@@ -837,8 +824,8 @@ func setHostnames(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool) er
 			continue
 		}
 
-		// Set hostname idempotently
-		setCmd := fmt.Sprintf("hostnamectl set-hostname %s", node.NewHostname)
+		// Set hostname idempotently (use sudo for non-root users)
+		setCmd := fmt.Sprintf("sudo hostnamectl set-hostname %s", node.NewHostname)
 		nodeLog.Infow("→ executing hostname change", "command", setCmd)
 
 		if _, stderr, err := sshPool.Run(ctx, node.Hostname, setCmd); err != nil {
@@ -875,9 +862,9 @@ func setRootPassword(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool)
 
 		nodeLog.Infow("→ setting root password")
 
-		// Use chpasswd to set password (works even if logged in as non-root with sudo)
+		// Use chpasswd to set password (use sudo for non-root users)
 		// Format: username:password
-		setCmd := fmt.Sprintf("echo 'root:%s' | chpasswd", password)
+		setCmd := fmt.Sprintf("echo 'root:%s' | sudo chpasswd", password)
 
 		if _, stderr, err := sshPool.Run(ctx, node.Hostname, setCmd); err != nil {
 			return fmt.Errorf("failed to set root password on %s: %w (stderr: %s)", node.Hostname, err, stderr)
