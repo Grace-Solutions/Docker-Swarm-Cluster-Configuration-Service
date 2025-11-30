@@ -24,11 +24,7 @@
         "source": "https://example.com/scripts/worker-setup.sh",
         "parameters": "",
         "conditions": [
-          {
-            "property": "role",
-            "operator": "=",
-            "value": "worker"
-          }
+          { "property": "role", "operator": "=", "value": "worker", "negate": false }
         ]
       },
       {
@@ -37,11 +33,16 @@
         "source": "https://example.com/scripts/manager-setup.sh",
         "parameters": "",
         "conditions": [
-          {
-            "property": "role",
-            "operator": "=",
-            "value": "manager"
-          }
+          { "property": "role", "operator": "=", "value": "manager", "negate": false }
+        ]
+      },
+      {
+        "enabled": true,
+        "name": "non-manager-nodes",
+        "source": "https://example.com/scripts/non-manager-setup.sh",
+        "parameters": "",
+        "conditions": [
+          { "property": "role", "operator": "=", "value": "manager", "negate": true }
         ]
       },
       {
@@ -50,11 +51,7 @@
         "source": "https://example.com/scripts/prod-setup.sh",
         "parameters": "",
         "conditions": [
-          {
-            "property": "label.environment",
-            "operator": "=",
-            "value": "production"
-          }
+          { "property": "label.environment", "operator": "=", "value": "production", "negate": false }
         ]
       },
       {
@@ -63,11 +60,16 @@
         "source": "https://example.com/scripts/vps-setup.sh",
         "parameters": "",
         "conditions": [
-          {
-            "property": "hostname",
-            "operator": "regex",
-            "value": "^vps-.*"
-          }
+          { "property": "hostname", "operator": "regex", "value": "^vps-.*", "negate": false }
+        ]
+      },
+      {
+        "enabled": true,
+        "name": "non-vps-nodes",
+        "source": "https://example.com/scripts/non-vps-setup.sh",
+        "parameters": "",
+        "conditions": [
+          { "property": "hostname", "operator": "regex", "value": "^vps-.*", "negate": true }
         ]
       }
     ],
@@ -85,16 +87,8 @@
         "source": "https://example.com/scripts/worker-validate.sh",
         "parameters": "",
         "conditions": [
-          {
-            "property": "role",
-            "operator": "=",
-            "value": "worker"
-          },
-          {
-            "property": "glusterEnabled",
-            "operator": "=",
-            "value": "true"
-          }
+          { "property": "role", "operator": "=", "value": "worker", "negate": false },
+          { "property": "glusterEnabled", "operator": "=", "value": "true", "negate": false }
         ]
       }
     ]

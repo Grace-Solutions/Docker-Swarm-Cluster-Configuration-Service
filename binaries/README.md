@@ -118,9 +118,15 @@ Pre and post deployment scripts support conditional execution based on node prop
 - `regex` or `matches` - Case-insensitive regex match
 - `!regex` or `notmatches` - Case-insensitive regex non-match
 
+**Negate Field:**
+- `negate: false` (default) - Use condition result as-is
+- `negate: true` - Flip the condition result (NOT logic)
+- Works with any operator for flexible logic
+
 **Condition Logic:**
 - Empty conditions array = run on all nodes
 - Multiple conditions = ALL must match (AND logic)
+- Use `negate: true` to invert any condition
 
 **Examples:**
 
@@ -133,11 +139,16 @@ Pre and post deployment scripts support conditional execution based on node prop
       "source": "https://example.com/worker-setup.sh",
       "parameters": "",
       "conditions": [
-        {
-          "property": "role",
-          "operator": "=",
-          "value": "worker"
-        }
+        { "property": "role", "operator": "=", "value": "worker", "negate": false }
+      ]
+    },
+    {
+      "enabled": true,
+      "name": "non-manager-nodes",
+      "source": "https://example.com/non-manager-setup.sh",
+      "parameters": "",
+      "conditions": [
+        { "property": "role", "operator": "=", "value": "manager", "negate": true }
       ]
     },
     {
@@ -146,16 +157,8 @@ Pre and post deployment scripts support conditional execution based on node prop
       "source": "https://example.com/prod-manager-setup.sh",
       "parameters": "",
       "conditions": [
-        {
-          "property": "role",
-          "operator": "=",
-          "value": "manager"
-        },
-        {
-          "property": "label.environment",
-          "operator": "=",
-          "value": "production"
-        }
+        { "property": "role", "operator": "=", "value": "manager", "negate": false },
+        { "property": "label.environment", "operator": "=", "value": "production", "negate": false }
       ]
     },
     {
@@ -164,11 +167,16 @@ Pre and post deployment scripts support conditional execution based on node prop
       "source": "https://example.com/vps-setup.sh",
       "parameters": "",
       "conditions": [
-        {
-          "property": "hostname",
-          "operator": "regex",
-          "value": "^vps-.*"
-        }
+        { "property": "hostname", "operator": "regex", "value": "^vps-.*", "negate": false }
+      ]
+    },
+    {
+      "enabled": true,
+      "name": "non-vps-nodes",
+      "source": "https://example.com/non-vps-setup.sh",
+      "parameters": "",
+      "conditions": [
+        { "property": "hostname", "operator": "regex", "value": "^vps-.*", "negate": true }
       ]
     }
   ]

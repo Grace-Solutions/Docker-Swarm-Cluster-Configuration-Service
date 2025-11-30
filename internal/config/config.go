@@ -24,9 +24,10 @@ type ScriptConfig struct {
 
 // ScriptCondition represents a condition for script execution.
 type ScriptCondition struct {
-	Property string `json:"property"` // Node property to check (e.g., "role", "hostname", "username", "newHostname", "glusterEnabled")
-	Operator string `json:"operator"` // Comparison operator: "=", "!=", "regex", "!regex"
-	Value    string `json:"value"`    // Value to compare against (case-insensitive for regex)
+	Property string `json:"property"`       // Node property to check (e.g., "role", "hostname", "username", "newHostname", "glusterEnabled")
+	Operator string `json:"operator"`       // Comparison operator: "=", "!=", "regex", "!regex"
+	Value    string `json:"value"`          // Value to compare against (case-insensitive for regex)
+	Negate   bool   `json:"negate"`         // Negate the result of this condition (default: false)
 }
 
 // GlobalSettings contains cluster-wide configuration.

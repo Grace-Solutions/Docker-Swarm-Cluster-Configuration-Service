@@ -36,13 +36,15 @@ func evaluateCondition(node NodeConfig, condition ScriptCondition) (bool, error)
 		return false, err
 	}
 
+	var result bool
+
 	// Evaluate based on operator
 	switch strings.ToLower(condition.Operator) {
 	case "=", "==", "equals":
-		return strings.EqualFold(propertyValue, condition.Value), nil
+		result = strings.EqualFold(propertyValue, condition.Value)
 
 	case "!=", "notequals":
-		return !strings.EqualFold(propertyValue, condition.Value), nil
+		result = !strings.EqualFold(propertyValue, condition.Value)
 
 	case "regex", "matches":
 		// Case-insensitive regex match
@@ -51,7 +53,7 @@ func evaluateCondition(node NodeConfig, condition ScriptCondition) (bool, error)
 		if err != nil {
 			return false, fmt.Errorf("invalid regex pattern '%s': %w", condition.Value, err)
 		}
-		return matched, nil
+		result = matched
 
 	case "!regex", "notmatches":
 		// Case-insensitive regex non-match
@@ -60,11 +62,18 @@ func evaluateCondition(node NodeConfig, condition ScriptCondition) (bool, error)
 		if err != nil {
 			return false, fmt.Errorf("invalid regex pattern '%s': %w", condition.Value, err)
 		}
-		return !matched, nil
+		result = !matched
 
 	default:
 		return false, fmt.Errorf("unsupported operator '%s' (supported: =, !=, regex, !regex)", condition.Operator)
 	}
+
+	// Apply negation if requested
+	if condition.Negate {
+		result = !result
+	}
+
+	return result, nil
 }
 
 // getNodeProperty retrieves a property value from a node by name.
