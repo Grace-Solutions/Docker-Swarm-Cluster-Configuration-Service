@@ -1785,21 +1785,40 @@ func teardownGlusterFS(ctx context.Context, sshPool *ssh.Pool, workers []string,
 	for _, worker := range workers {
 		log.Infow("→ cleaning up GlusterFS on worker", "worker", worker)
 
-		// Unmount
-		unmountCmd := fmt.Sprintf("umount %s 2>/dev/null || true", mount)
-		_, _, _ = sshPool.Run(ctx, worker, unmountCmd)
+		// Unmount the GlusterFS volume mount (e.g., /mnt/GlusterFS/docker-swarm-0001/mount)
+		unmountVolumeCmd := fmt.Sprintf("umount %s 2>/dev/null || true", mount)
+		log.Infow("→ unmounting GlusterFS volume", "worker", worker, "mount", mount)
+		_, _, _ = sshPool.Run(ctx, worker, unmountVolumeCmd)
 
-		// Remove from fstab
-		fstabCmd := fmt.Sprintf("sed -i '\\|%s|d' /etc/fstab 2>/dev/null || true", volume)
-		_, _, _ = sshPool.Run(ctx, worker, fstabCmd)
+		// Unmount the brick disk if it's mounted (e.g., /mnt/GlusterFS/docker-swarm-0001/brick)
+		unmountBrickCmd := fmt.Sprintf("umount %s 2>/dev/null || true", brick)
+		log.Infow("→ unmounting brick disk", "worker", worker, "brick", brick)
+		_, _, _ = sshPool.Run(ctx, worker, unmountBrickCmd)
 
-		// Remove brick directory contents (but keep the mount point if it's a dedicated disk)
+		// Remove volume mount from fstab
+		fstabVolumeCmd := fmt.Sprintf("sed -i '\\|%s|d' /etc/fstab 2>/dev/null || true", volume)
+		_, _, _ = sshPool.Run(ctx, worker, fstabVolumeCmd)
+
+		// Remove brick disk from fstab (match any line containing the brick path)
+		fstabBrickCmd := fmt.Sprintf("sed -i '\\|%s|d' /etc/fstab 2>/dev/null || true", brick)
+		log.Infow("→ removing brick from fstab", "worker", worker, "brick", brick)
+		_, _, _ = sshPool.Run(ctx, worker, fstabBrickCmd)
+
+		// Remove brick directory contents
 		cleanCmd := fmt.Sprintf("rm -rf %s/* 2>/dev/null || true", brick)
 		_, _, _ = sshPool.Run(ctx, worker, cleanCmd)
 
-		// Remove mount directory if it's not a disk mount point
-		removeMountCmd := fmt.Sprintf("mountpoint -q %s || rm -rf %s 2>/dev/null || true", mount, mount)
+		// Remove brick directory itself
+		removeBrickDirCmd := fmt.Sprintf("rm -rf %s 2>/dev/null || true", brick)
+		log.Infow("→ removing brick directory", "worker", worker, "brick", brick)
+		_, _, _ = sshPool.Run(ctx, worker, removeBrickDirCmd)
+
+		// Remove mount directory if it exists
+		removeMountCmd := fmt.Sprintf("rm -rf %s 2>/dev/null || true", mount)
+		log.Infow("→ removing mount directory", "worker", worker, "mount", mount)
 		_, _, _ = sshPool.Run(ctx, worker, removeMountCmd)
+
+		log.Infow("✓ worker cleanup complete", "worker", worker)
 	}
 
 	log.Infow("✓ GlusterFS teardown complete")
