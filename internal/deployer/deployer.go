@@ -133,14 +133,14 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 			}
 		}
 
-		// Get overlay FQDNs for GlusterFS if overlay provider is configured
-		glusterFQDNs, err := getGlusterHostnames(ctx, sshPool, cfg, sshGlusterWorkers)
+		// Get overlay IPs for GlusterFS if overlay provider is configured
+		glusterAddresses, err := getGlusterHostnames(ctx, sshPool, cfg, sshGlusterWorkers)
 		if err != nil {
-			return fmt.Errorf("failed to get GlusterFS hostnames: %w", err)
+			return fmt.Errorf("failed to get GlusterFS addresses: %w", err)
 		}
-		log.Infow("→ Using FQDNs for GlusterFS", "fqdns", glusterFQDNs, "overlayProvider", cfg.GlobalSettings.OverlayProvider)
+		log.Infow("→ Using overlay IPs for GlusterFS", "addresses", glusterAddresses, "overlayProvider", cfg.GlobalSettings.OverlayProvider)
 
-		validWorkers, err := orchestrator.GlusterSetup(ctx, sshPool, sshGlusterWorkers, glusterFQDNs,
+		validWorkers, err := orchestrator.GlusterSetup(ctx, sshPool, sshGlusterWorkers, glusterAddresses,
 			cfg.GlobalSettings.GlusterVolume,
 			cfg.GlobalSettings.GlusterMount,
 			cfg.GlobalSettings.GlusterBrick,
@@ -1736,18 +1736,20 @@ func getGlusterHostnames(ctx context.Context, sshPool *ssh.Pool, cfg *config.Con
 		return sshHostnames, nil
 	}
 
-	// Get overlay hostnames for each worker
+	// Get overlay info for each worker
 	overlayHostnames := make([]string, 0, len(sshHostnames))
 
 	for _, sshHost := range sshHostnames {
-		overlayHost, err := getOverlayHostnameForNode(ctx, sshPool, sshHost, provider)
+		overlayInfo, err := getOverlayInfoForNode(ctx, sshPool, sshHost, provider)
 		if err != nil {
-			log.Warnw("failed to get overlay hostname, falling back to SSH hostname", "sshHost", sshHost, "error", err)
-			overlayHost = sshHost
+			log.Warnw("failed to get overlay info, falling back to SSH hostname", "sshHost", sshHost, "error", err)
+			overlayHostnames = append(overlayHostnames, sshHost)
 		} else {
-			log.Infow("retrieved overlay hostname", "sshHost", sshHost, "overlayHostname", overlayHost)
+			log.Infow("→ overlay info for GlusterFS", "sshHost", sshHost, "fqdn", overlayInfo.FQDN, "ip", overlayInfo.IP, "interface", overlayInfo.Interface)
+			// Use overlay IP instead of FQDN for GlusterFS to avoid DNS resolution issues
+			// GlusterFS will show this IP in "Other names" field
+			overlayHostnames = append(overlayHostnames, overlayInfo.IP)
 		}
-		overlayHostnames = append(overlayHostnames, overlayHost)
 	}
 
 	return overlayHostnames, nil

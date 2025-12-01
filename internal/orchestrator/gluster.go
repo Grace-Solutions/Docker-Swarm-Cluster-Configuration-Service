@@ -7,6 +7,7 @@ import (
 
 	"clusterctl/internal/gluster"
 	"clusterctl/internal/logging"
+	"clusterctl/internal/retry"
 	"clusterctl/internal/ssh"
 )
 
@@ -149,38 +150,90 @@ func createTrustedPool(ctx context.Context, sshPool *ssh.Pool, sshWorkers, glust
 
 	// Use first worker as the orchestrator (SSH for command execution)
 	sshOrchestrator := sshWorkers[0]
+	glusterOrchestrator := glusterWorkers[0]
 
-	// Probe all other workers from the orchestrator (use Gluster FQDNs for peer probe)
+	logging.L().Infow("→ GlusterFS orchestrator", "sshHost", sshOrchestrator, "glusterAddress", glusterOrchestrator)
+
+	// Probe all other workers from the orchestrator (use Gluster addresses for peer probe)
 	for i := 1; i < len(glusterWorkers); i++ {
 		glusterPeer := glusterWorkers[i]
+		sshPeer := sshWorkers[i]
+
 		cmd := fmt.Sprintf("gluster peer probe %s", glusterPeer)
-		logging.L().Infow("probing GlusterFS peer", "sshHost", sshOrchestrator, "glusterPeer", glusterPeer, "command", cmd)
-		stdout, stderr, err := sshPool.Run(ctx, sshOrchestrator, cmd)
+		logging.L().Infow("→ probing GlusterFS peer", "sshHost", sshOrchestrator, "sshPeer", sshPeer, "glusterPeer", glusterPeer, "command", cmd)
+
+		// Use retry for peer probe as it can fail due to timing issues
+		retryCfg := retry.NetworkConfig(fmt.Sprintf("peer-probe-%s", glusterPeer))
+		err := retry.Do(ctx, retryCfg, func() error {
+			stdout, stderr, err := sshPool.Run(ctx, sshOrchestrator, cmd)
+			if err != nil {
+				return fmt.Errorf("failed to probe %s from %s: %w (stderr: %s)", glusterPeer, sshOrchestrator, err, stderr)
+			}
+			logging.L().Infow(fmt.Sprintf("✅ peer probe %s: %s", glusterPeer, strings.TrimSpace(stdout)))
+			return nil
+		})
+
 		if err != nil {
-			return fmt.Errorf("failed to probe %s from %s: %w (stderr: %s)", glusterPeer, sshOrchestrator, err, stderr)
+			return err
 		}
-		logging.L().Infow(fmt.Sprintf("✅ peer probe %s: %s", glusterPeer, strings.TrimSpace(stdout)))
 	}
 
-	// Verify peer status
-	cmd := "gluster peer status"
-	logging.L().Infow("verifying GlusterFS peer status", "sshHost", sshOrchestrator, "command", cmd)
-	stdout, stderr, err := sshPool.Run(ctx, sshOrchestrator, cmd)
+	// Verify peer status with retry
+	logging.L().Infow("→ verifying GlusterFS peer status", "sshHost", sshOrchestrator)
+
+	retryCfg := retry.NetworkConfig("verify-peer-status")
+	var peerStatusOutput string
+
+	err := retry.Do(ctx, retryCfg, func() error {
+		cmd := "gluster peer status"
+		stdout, stderr, err := sshPool.Run(ctx, sshOrchestrator, cmd)
+		if err != nil {
+			return fmt.Errorf("failed to get peer status: %w (stderr: %s)", err, stderr)
+		}
+
+		peerStatusOutput = stdout
+
+		// Verify all peers are in "Peer in Cluster (Connected)" state
+		expectedPeers := len(glusterWorkers) - 1 // Orchestrator is not in its own peer list
+		if !strings.Contains(stdout, fmt.Sprintf("Number of Peers: %d", expectedPeers)) {
+			return fmt.Errorf("expected %d peers, but peer status shows different count", expectedPeers)
+		}
+
+		// Check that all peers are connected
+		for i := 1; i < len(glusterWorkers); i++ {
+			glusterPeer := glusterWorkers[i]
+			if !strings.Contains(stdout, glusterPeer) {
+				return fmt.Errorf("peer %s not found in peer status", glusterPeer)
+			}
+			// Look for the peer's section and check if it's connected
+			peerSection := stdout[strings.Index(stdout, glusterPeer):]
+			if !strings.Contains(peerSection, "Peer in Cluster (Connected)") {
+				return fmt.Errorf("peer %s is not in 'Peer in Cluster (Connected)' state", glusterPeer)
+			}
+		}
+
+		return nil
+	})
+
 	if err != nil {
-		return fmt.Errorf("failed to get peer status: %w (stderr: %s)", err, stderr)
+		logging.L().Errorw("peer status verification failed", "error", err, "peerStatus", peerStatusOutput)
+		return err
 	}
-	logging.L().Infow(fmt.Sprintf("peer status:\n%s", stdout))
+
+	logging.L().Infow(fmt.Sprintf("✅ peer status verified:\n%s", peerStatusOutput))
 
 	return nil
 }
 
 func createVolume(ctx context.Context, sshPool *ssh.Pool, sshWorkers, glusterWorkers []string, volume, brick string) error {
 	sshOrchestrator := sshWorkers[0]
+	glusterOrchestrator := glusterWorkers[0]
 
-	// Build brick list using Gluster FQDNs: worker1.netbird.cloud:/path worker2.netbird.cloud:/path ...
+	// Build brick list using Gluster addresses: 100.76.1.1:/path 100.76.1.2:/path ...
 	var bricks []string
-	for _, glusterWorker := range glusterWorkers {
+	for i, glusterWorker := range glusterWorkers {
 		bricks = append(bricks, fmt.Sprintf("%s:%s", glusterWorker, brick))
+		logging.L().Infow("→ brick", "index", i, "sshHost", sshWorkers[i], "glusterAddress", glusterWorker, "brickPath", brick)
 	}
 	brickList := strings.Join(bricks, " ")
 
@@ -188,19 +241,30 @@ func createVolume(ctx context.Context, sshPool *ssh.Pool, sshWorkers, glusterWor
 	replicaCount := len(glusterWorkers)
 	cmd := fmt.Sprintf("gluster volume create %s replica %d %s force", volume, replicaCount, brickList)
 
-	logging.L().Infow("creating GlusterFS volume", "sshHost", sshOrchestrator, "volume", volume, "replica", replicaCount, "bricks", brickList)
-	stdout, stderr, err := sshPool.Run(ctx, sshOrchestrator, cmd)
-	if err != nil {
-		// Check if volume already exists
-		if strings.Contains(stderr, "already exists") || strings.Contains(stdout, "already exists") {
-			logging.L().Infow(fmt.Sprintf("volume %s already exists", volume))
-			return nil
-		}
-		return fmt.Errorf("failed to create volume: %w (stderr: %s)", err, stderr)
-	}
+	logging.L().Infow("→ creating GlusterFS volume", "sshHost", sshOrchestrator, "glusterOrchestrator", glusterOrchestrator, "volume", volume, "replica", replicaCount, "bricks", brickList)
 
-	logging.L().Infow(fmt.Sprintf("✅ volume created: %s", strings.TrimSpace(stdout)))
-	return nil
+	// Use retry for volume creation as it can fail if peers are not fully ready
+	retryCfg := retry.NetworkConfig(fmt.Sprintf("create-volume-%s", volume))
+
+	err := retry.Do(ctx, retryCfg, func() error {
+		stdout, stderr, err := sshPool.Run(ctx, sshOrchestrator, cmd)
+		if err != nil {
+			// Check if volume already exists
+			if strings.Contains(stderr, "already exists") || strings.Contains(stdout, "already exists") {
+				logging.L().Infow(fmt.Sprintf("volume %s already exists", volume))
+				return nil
+			}
+
+			// Log detailed error for debugging
+			logging.L().Warnw("volume creation failed", "error", err, "stderr", stderr, "stdout", stdout)
+			return fmt.Errorf("failed to create volume: %w (stderr: %s)", err, stderr)
+		}
+
+		logging.L().Infow(fmt.Sprintf("✅ volume created: %s", strings.TrimSpace(stdout)))
+		return nil
+	})
+
+	return err
 }
 
 func startVolume(ctx context.Context, sshPool *ssh.Pool, orchestrator, volume string) error {
