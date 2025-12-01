@@ -20,15 +20,25 @@ import (
 )
 
 // formatNodeMessage formats a log message with node identifier.
-// If newHostname is blank, returns: "prefix [hostname] message"
-// If newHostname is set, returns: "prefix [hostname - [newHostname]] message"
-// Example: formatNodeMessage("→", "192.168.1.1", "node1", "installing Docker")
-//   -> "→ [192.168.1.1 - [node1]] installing Docker"
-func formatNodeMessage(prefix, hostname, newHostname, message string) string {
-	if newHostname == "" {
-		return fmt.Sprintf("%s [%s] %s", prefix, hostname, message)
+// Format: "prefix [hostname - [newHostname] - role] message"
+// If newHostname is blank: "prefix [hostname - role] message"
+// If role is blank: "prefix [hostname - [newHostname]] message"
+// If both blank: "prefix [hostname] message"
+// Example: formatNodeMessage("→", "192.168.1.1", "node1", "manager", "installing Docker")
+//   -> "→ [192.168.1.1 - [node1] - manager] installing Docker"
+func formatNodeMessage(prefix, hostname, newHostname, role, message string) string {
+	parts := []string{hostname}
+
+	if newHostname != "" {
+		parts = append(parts, fmt.Sprintf("[%s]", newHostname))
 	}
-	return fmt.Sprintf("%s [%s - [%s]] %s", prefix, hostname, newHostname, message)
+
+	if role != "" {
+		parts = append(parts, role)
+	}
+
+	identifier := strings.Join(parts, " - ")
+	return fmt.Sprintf("%s [%s] %s", prefix, identifier, message)
 }
 
 // Deploy orchestrates the complete cluster deployment from the configuration.
@@ -425,7 +435,7 @@ func prepareSSHKeys(cfg *config.Config) (*sshkeys.KeyPair, error) {
 			"authMethod", authMethod,
 		)
 
-		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "installing public key for future automatic authentication"))
+		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "installing public key for future automatic authentication"))
 
 		authConfig := ssh.AuthConfig{
 			Username:       node.Username,
@@ -448,9 +458,9 @@ func prepareSSHKeys(cfg *config.Config) (*sshkeys.KeyPair, error) {
 		)
 
 		if _, stderr, err := tempPool.Run(ctx, node.Hostname, installCmd); err != nil {
-			nodeLog.Warnw(formatNodeMessage("✗", node.Hostname, node.NewHostname, "failed to install public key"), "error", err, "stderr", stderr)
+			nodeLog.Warnw(formatNodeMessage("✗", node.Hostname, node.NewHostname, node.Role, "failed to install public key"), "error", err, "stderr", stderr)
 		} else {
-			nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "public key installed successfully"))
+			nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "public key installed successfully"))
 		}
 	}
 
@@ -489,7 +499,7 @@ func createSSHPool(cfg *config.Config, keyPair *sshkeys.KeyPair) (*ssh.Pool, err
 			"authMethod", authMethod,
 		)
 
-		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "configuring SSH connection"))
+		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "configuring SSH connection"))
 
 		authConfig := ssh.AuthConfig{
 			Username: node.Username,
@@ -543,32 +553,32 @@ func installDependencies(ctx context.Context, cfg *config.Config, sshPool *ssh.P
 			"port", node.SSHPort,
 		)
 
-		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "starting dependency installation"))
+		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "starting dependency installation"))
 
 		// Install Docker
-		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "installing Docker"))
+		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "installing Docker"))
 		if err := installDocker(ctx, sshPool, node.Hostname); err != nil {
 			return fmt.Errorf("failed to install Docker on %s: %w", node.Hostname, err)
 		}
-		nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "Docker installed"))
+		nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "Docker installed"))
 
 		// Install GlusterFS if needed
 		if node.GlusterEnabled {
-			nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "installing GlusterFS server"))
+			nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "installing GlusterFS server"))
 			if err := installGlusterFS(ctx, sshPool, node.Hostname, true); err != nil {
 				return fmt.Errorf("failed to install GlusterFS on %s: %w", node.Hostname, err)
 			}
-			nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "GlusterFS server installed"))
+			nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "GlusterFS server installed"))
 		} else if node.Role == "manager" && len(getGlusterWorkers(cfg)) > 0 {
 			// Managers need GlusterFS client if any workers have GlusterFS
-			nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "installing GlusterFS client"))
+			nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "installing GlusterFS client"))
 			if err := installGlusterFS(ctx, sshPool, node.Hostname, false); err != nil {
 				return fmt.Errorf("failed to install GlusterFS client on %s: %w", node.Hostname, err)
 			}
-			nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "GlusterFS client installed"))
+			nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "GlusterFS client installed"))
 		}
 
-		nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "all dependencies installed"))
+		nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "all dependencies installed"))
 	}
 
 	return nil
@@ -658,11 +668,11 @@ func configureOverlay(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool
 			"port", node.SSHPort,
 		)
 
-		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "configuring overlay network"))
+		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "configuring overlay network"))
 		if err := configureOverlayOnNode(ctx, sshPool, node, provider, overlayConfig); err != nil {
 			return fmt.Errorf("failed to configure %s overlay on %s: %w", provider, node.Hostname, err)
 		}
-		nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "overlay network configured"))
+		nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "overlay network configured"))
 	}
 
 	log.Infow("✅ overlay network configured", "provider", provider)
@@ -737,16 +747,16 @@ func configureNetbirdOnNode(ctx context.Context, sshPool *ssh.Pool, node config.
 	log := logging.L().With("node", node.Hostname, "provider", "netbird")
 
 	// Check if netbird is already running
-	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "checking netbird status"))
+	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "checking netbird status"))
 	checkCmd := "netbird status 2>/dev/null | grep -q 'Status: Connected' && echo 'CONNECTED' || echo 'NOT_CONNECTED'"
 	stdout, _, err := sshPool.Run(ctx, node.Hostname, checkCmd)
 	if err == nil && stdout == "CONNECTED\n" {
-		log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "netbird already connected, skipping installation"))
+		log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "netbird already connected, skipping installation"))
 		return nil
 	}
 
 	// Check if netbird is installed
-	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "checking if netbird is installed"))
+	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "checking if netbird is installed"))
 	checkInstallCmd := "command -v netbird &> /dev/null && echo 'INSTALLED' || echo 'NOT_INSTALLED'"
 	stdout, _, _ = sshPool.Run(ctx, node.Hostname, checkInstallCmd)
 
@@ -755,31 +765,31 @@ func configureNetbirdOnNode(ctx context.Context, sshPool *ssh.Pool, node config.
 		installURL := "https://pkgs.netbird.io/install.sh"
 		installCmd := fmt.Sprintf("curl -fsSL %s | sh", installURL)
 
-		log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "netbird not found, downloading and installing"))
-		log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, fmt.Sprintf("download URL: %s", installURL)))
-		log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, fmt.Sprintf("install command: %s", installCmd)))
-		log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "executing installation (this may take 30-60 seconds)..."))
+		log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "netbird not found, downloading and installing"))
+		log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, fmt.Sprintf("download URL: %s", installURL)))
+		log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, fmt.Sprintf("install command: %s", installCmd)))
+		log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "executing installation (this may take 30-60 seconds)..."))
 
 		retryCfg := retry.NetworkConfig(fmt.Sprintf("install-netbird-%s", node.Hostname))
 		err = retry.Do(ctx, retryCfg, func() error {
 			_, stderr, err := sshPool.Run(ctx, node.Hostname, installCmd)
 			if err != nil {
-				log.Warnw(formatNodeMessage("✗", node.Hostname, node.NewHostname, "netbird installation failed"), "error", err, "stderr", stderr)
+				log.Warnw(formatNodeMessage("✗", node.Hostname, node.NewHostname, node.Role, "netbird installation failed"), "error", err, "stderr", stderr)
 				return fmt.Errorf("failed to install netbird: %w (stderr: %s)", err, stderr)
 			}
 			if stderr != "" {
-				log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "netbird installation completed"), "stderr", stderr)
+				log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "netbird installation completed"), "stderr", stderr)
 			} else {
-				log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "netbird installation completed"))
+				log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "netbird installation completed"))
 			}
 			return nil
 		})
 		if err != nil {
 			return err
 		}
-		log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "netbird installed successfully"))
+		log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "netbird installed successfully"))
 	} else {
-		log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "netbird already installed"))
+		log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "netbird already installed"))
 	}
 
 	// Start netbird with setup key and flags if provided (with retry)
@@ -792,21 +802,21 @@ func configureNetbirdOnNode(ctx context.Context, sshPool *ssh.Pool, node config.
 		maskedCmd = fmt.Sprintf("netbird up %s", maskSetupKey(overlayConfig))
 	}
 
-	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "starting netbird and connecting to network"))
-	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, fmt.Sprintf("command: %s", maskedCmd)))
-	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "executing netbird up..."))
+	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "starting netbird and connecting to network"))
+	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, fmt.Sprintf("command: %s", maskedCmd)))
+	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "executing netbird up..."))
 
 	retryCfg := retry.NetworkConfig(fmt.Sprintf("start-netbird-%s", node.Hostname))
 	err = retry.Do(ctx, retryCfg, func() error {
 		_, stderr, err := sshPool.Run(ctx, node.Hostname, upCmd)
 		if err != nil {
-			log.Warnw(formatNodeMessage("✗", node.Hostname, node.NewHostname, "netbird up failed"), "error", err, "stderr", stderr)
+			log.Warnw(formatNodeMessage("✗", node.Hostname, node.NewHostname, node.Role, "netbird up failed"), "error", err, "stderr", stderr)
 			return fmt.Errorf("failed to start netbird: %w (stderr: %s)", err, stderr)
 		}
 		if stderr != "" {
-			log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "netbird up completed"), "stderr", stderr)
+			log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "netbird up completed"), "stderr", stderr)
 		} else {
-			log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "netbird up completed"))
+			log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "netbird up completed"))
 		}
 		return nil
 	})
@@ -815,16 +825,16 @@ func configureNetbirdOnNode(ctx context.Context, sshPool *ssh.Pool, node config.
 	}
 
 	// Verify connection
-	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "verifying netbird connection"))
+	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "verifying netbird connection"))
 	verifyCmd := "netbird status"
 	verifyStdout, verifyStderr, verifyErr := sshPool.Run(ctx, node.Hostname, verifyCmd)
 	if verifyErr != nil {
-		log.Warnw(formatNodeMessage("⚠", node.Hostname, node.NewHostname, "failed to verify netbird status"), "error", verifyErr, "stderr", verifyStderr)
+		log.Warnw(formatNodeMessage("⚠", node.Hostname, node.NewHostname, node.Role, "failed to verify netbird status"), "error", verifyErr, "stderr", verifyStderr)
 	} else {
-		log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "netbird status"), "status", verifyStdout)
+		log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "netbird status"), "status", verifyStdout)
 	}
 
-	log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "netbird connected successfully"))
+	log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "netbird connected successfully"))
 	return nil
 }
 
@@ -833,16 +843,16 @@ func configureTailscaleOnNode(ctx context.Context, sshPool *ssh.Pool, node confi
 	log := logging.L().With("node", node.Hostname, "provider", "tailscale")
 
 	// Check if tailscale is already running
-	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "checking tailscale status"))
+	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "checking tailscale status"))
 	checkCmd := "tailscale status --json 2>/dev/null | grep -q '\"BackendState\":\"Running\"' && echo 'RUNNING' || echo 'NOT_RUNNING'"
 	stdout, _, err := sshPool.Run(ctx, node.Hostname, checkCmd)
 	if err == nil && stdout == "RUNNING\n" {
-		log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "tailscale already running, skipping installation"))
+		log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "tailscale already running, skipping installation"))
 		return nil
 	}
 
 	// Check if tailscale is installed
-	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "checking if tailscale is installed"))
+	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "checking if tailscale is installed"))
 	checkInstallCmd := "command -v tailscale &> /dev/null && echo 'INSTALLED' || echo 'NOT_INSTALLED'"
 	stdout, _, _ = sshPool.Run(ctx, node.Hostname, checkInstallCmd)
 
@@ -851,31 +861,31 @@ func configureTailscaleOnNode(ctx context.Context, sshPool *ssh.Pool, node confi
 		installURL := "https://tailscale.com/install.sh"
 		installCmd := fmt.Sprintf("curl -fsSL %s | sh", installURL)
 
-		log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "tailscale not found, downloading and installing"))
-		log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, fmt.Sprintf("download URL: %s", installURL)))
-		log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, fmt.Sprintf("install command: %s", installCmd)))
-		log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "executing installation (this may take 30-60 seconds)..."))
+		log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "tailscale not found, downloading and installing"))
+		log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, fmt.Sprintf("download URL: %s", installURL)))
+		log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, fmt.Sprintf("install command: %s", installCmd)))
+		log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "executing installation (this may take 30-60 seconds)..."))
 
 		retryCfg := retry.NetworkConfig(fmt.Sprintf("install-tailscale-%s", node.Hostname))
 		err = retry.Do(ctx, retryCfg, func() error {
 			_, stderr, err := sshPool.Run(ctx, node.Hostname, installCmd)
 			if err != nil {
-				log.Warnw(formatNodeMessage("✗", node.Hostname, node.NewHostname, "tailscale installation failed"), "error", err, "stderr", stderr)
+				log.Warnw(formatNodeMessage("✗", node.Hostname, node.NewHostname, node.Role, "tailscale installation failed"), "error", err, "stderr", stderr)
 				return fmt.Errorf("failed to install tailscale: %w (stderr: %s)", err, stderr)
 			}
 			if stderr != "" {
-				log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "tailscale installation completed"), "stderr", stderr)
+				log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "tailscale installation completed"), "stderr", stderr)
 			} else {
-				log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "tailscale installation completed"))
+				log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "tailscale installation completed"))
 			}
 			return nil
 		})
 		if err != nil {
 			return err
 		}
-		log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "tailscale installed successfully"))
+		log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "tailscale installed successfully"))
 	} else {
-		log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "tailscale already installed"))
+		log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "tailscale already installed"))
 	}
 
 	// Start tailscale with auth key if provided (with retry)
@@ -887,21 +897,21 @@ func configureTailscaleOnNode(ctx context.Context, sshPool *ssh.Pool, node confi
 		maskedCmd = fmt.Sprintf("tailscale up --authkey='%s'", maskSetupKey(overlayConfig))
 	}
 
-	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "starting tailscale and connecting to network"))
-	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, fmt.Sprintf("command: %s", maskedCmd)))
-	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "executing tailscale up..."))
+	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "starting tailscale and connecting to network"))
+	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, fmt.Sprintf("command: %s", maskedCmd)))
+	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "executing tailscale up..."))
 
 	retryCfg := retry.NetworkConfig(fmt.Sprintf("start-tailscale-%s", node.Hostname))
 	err = retry.Do(ctx, retryCfg, func() error {
 		_, stderr, err := sshPool.Run(ctx, node.Hostname, upCmd)
 		if err != nil {
-			log.Warnw(formatNodeMessage("✗", node.Hostname, node.NewHostname, "tailscale up failed"), "error", err, "stderr", stderr)
+			log.Warnw(formatNodeMessage("✗", node.Hostname, node.NewHostname, node.Role, "tailscale up failed"), "error", err, "stderr", stderr)
 			return fmt.Errorf("failed to start tailscale: %w (stderr: %s)", err, stderr)
 		}
 		if stderr != "" {
-			log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "tailscale up completed"), "stderr", stderr)
+			log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "tailscale up completed"), "stderr", stderr)
 		} else {
-			log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "tailscale up completed"))
+			log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "tailscale up completed"))
 		}
 		return nil
 	})
@@ -910,16 +920,16 @@ func configureTailscaleOnNode(ctx context.Context, sshPool *ssh.Pool, node confi
 	}
 
 	// Verify connection
-	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "verifying tailscale connection"))
+	log.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "verifying tailscale connection"))
 	verifyCmd := "tailscale status"
 	verifyStdout, verifyStderr, verifyErr := sshPool.Run(ctx, node.Hostname, verifyCmd)
 	if verifyErr != nil {
-		log.Warnw(formatNodeMessage("⚠", node.Hostname, node.NewHostname, "failed to verify tailscale status"), "error", verifyErr, "stderr", verifyStderr)
+		log.Warnw(formatNodeMessage("⚠", node.Hostname, node.NewHostname, node.Role, "failed to verify tailscale status"), "error", verifyErr, "stderr", verifyStderr)
 	} else {
-		log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "tailscale status"), "status", verifyStdout)
+		log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "tailscale status"), "status", verifyStdout)
 	}
 
-	log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "tailscale connected successfully"))
+	log.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "tailscale connected successfully"))
 	return nil
 }
 
@@ -1038,24 +1048,24 @@ func setHostnames(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool) er
 			"port", node.SSHPort,
 		)
 
-		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "checking current hostname"))
+		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "checking current hostname"))
 
 		// Check current hostname
 		stdout, _, err := sshPool.Run(ctx, node.Hostname, "hostname")
 		if err == nil && stdout == node.NewHostname+"\n" {
-			nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "hostname already set, skipping"))
+			nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "hostname already set, skipping"))
 			continue
 		}
 
 		// Set hostname idempotently
 		setCmd := fmt.Sprintf("hostnamectl set-hostname %s", node.NewHostname)
-		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, fmt.Sprintf("executing hostname change (command: %s)", setCmd)))
+		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, fmt.Sprintf("executing hostname change (command: %s)", setCmd)))
 
 		if _, stderr, err := sshPool.Run(ctx, node.Hostname, setCmd); err != nil {
 			return fmt.Errorf("failed to set hostname on %s: %w (stderr: %s)", node.Hostname, err, stderr)
 		}
 
-		nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "hostname set successfully"))
+		nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "hostname set successfully"))
 	}
 
 	return nil
@@ -1083,7 +1093,7 @@ func setRootPassword(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool)
 			"port", node.SSHPort,
 		)
 
-		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "setting root password"))
+		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "setting root password"))
 
 		// Use chpasswd to set password
 		// Format: username:password
@@ -1093,7 +1103,7 @@ func setRootPassword(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool)
 			return fmt.Errorf("failed to set root password on %s: %w (stderr: %s)", node.Hostname, err, stderr)
 		}
 
-		nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "root password set successfully"))
+		nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "root password set successfully"))
 	}
 
 	return nil
@@ -1183,15 +1193,15 @@ func executeScripts(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool, 
 				"port", node.SSHPort,
 			)
 
-			nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "executing script on node"))
+			nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "executing script on node"))
 			if err := executeScriptOnNode(ctx, sshPool, node, script); err != nil {
 				if script.ContinueOnError {
-					nodeLog.Warnw(formatNodeMessage("✗", node.Hostname, node.NewHostname, "script failed but continuing (continueOnError=true)"), "error", err)
+					nodeLog.Warnw(formatNodeMessage("✗", node.Hostname, node.NewHostname, node.Role, "script failed but continuing (continueOnError=true)"), "error", err)
 				} else {
 					return fmt.Errorf("failed to execute script %s on %s: %w", script.Name, node.Hostname, err)
 				}
 			} else {
-				nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "script executed successfully on node"))
+				nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "script executed successfully on node"))
 			}
 		}
 
@@ -1255,15 +1265,15 @@ func rebootNodes(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool) err
 		}
 
 		nodeLog := log.With("node", node.Hostname)
-		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "initiating reboot with 15 second delay"))
+		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "initiating reboot with 15 second delay"))
 
 		// Initiate reboot with 15 second delay and terminate SSH connection cleanly
 		rebootCmd := "nohup sh -c 'sleep 15 && reboot' > /dev/null 2>&1 &"
 		if _, stderr, err := sshPool.Run(ctx, node.Hostname, rebootCmd); err != nil {
 			// Ignore errors as the connection may be terminated
-			nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "reboot initiated (connection may have terminated)"), "stderr", stderr)
+			nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "reboot initiated (connection may have terminated)"), "stderr", stderr)
 		} else {
-			nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "reboot scheduled successfully"))
+			nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "reboot scheduled successfully"))
 		}
 	}
 
@@ -1362,7 +1372,7 @@ func applyNodeLabels(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool,
 		}
 
 		// Apply labels to the node
-		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "applying labels"), "count", len(labels))
+		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "applying labels"), "count", len(labels))
 		for key, value := range labels {
 			// Escape special characters in label values
 			escapedValue := strings.ReplaceAll(value, `"`, `\"`)
@@ -1370,13 +1380,13 @@ func applyNodeLabels(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool,
 				key, escapedValue, node.Hostname)
 
 			if _, stderr, err := sshPool.Run(ctx, primaryMaster, labelCmd); err != nil {
-				nodeLog.Warnw(formatNodeMessage("✗", node.Hostname, node.NewHostname, "failed to apply label"), "key", key, "value", value, "error", err, "stderr", stderr)
+				nodeLog.Warnw(formatNodeMessage("✗", node.Hostname, node.NewHostname, node.Role, "failed to apply label"), "key", key, "value", value, "error", err, "stderr", stderr)
 			} else {
-				nodeLog.Debugw(formatNodeMessage("✓", node.Hostname, node.NewHostname, "label applied"), "key", key, "value", value)
+				nodeLog.Debugw(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "label applied"), "key", key, "value", value)
 			}
 		}
 
-		nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "labels applied successfully"), "total", len(labels))
+		nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "labels applied successfully"), "total", len(labels))
 	}
 
 	log.Infow("all node labels applied")
@@ -1393,7 +1403,7 @@ func removeSSHPublicKeyFromNodes(ctx context.Context, cfg *config.Config, sshPoo
 
 	for _, node := range cfg.Nodes {
 		nodeLog := log.With("node", node.Hostname)
-		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, "removing public key from node"))
+		nodeLog.Infow(formatNodeMessage("→", node.Hostname, node.NewHostname, node.Role, "removing public key from node"))
 
 		// Remove the public key from authorized_keys
 		removeCmd := fmt.Sprintf(
@@ -1402,9 +1412,9 @@ func removeSSHPublicKeyFromNodes(ctx context.Context, cfg *config.Config, sshPoo
 		)
 
 		if _, stderr, err := sshPool.Run(ctx, node.Hostname, removeCmd); err != nil {
-			nodeLog.Warnw(formatNodeMessage("✗", node.Hostname, node.NewHostname, "failed to remove public key"), "error", err, "stderr", stderr)
+			nodeLog.Warnw(formatNodeMessage("✗", node.Hostname, node.NewHostname, node.Role, "failed to remove public key"), "error", err, "stderr", stderr)
 		} else {
-			nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, "public key removed successfully"))
+			nodeLog.Infow(formatNodeMessage("✓", node.Hostname, node.NewHostname, node.Role, "public key removed successfully"))
 		}
 	}
 
