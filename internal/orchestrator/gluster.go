@@ -178,16 +178,40 @@ func createTrustedPool(ctx context.Context, sshPool *ssh.Pool, sshWorkers, glust
 		}
 	}
 
+	// IMPORTANT: Have a peer probe the orchestrator back
+	// This ensures all peers explicitly know about the orchestrator
+	// The orchestrator can't probe itself, so we need a peer to do it
+	// This creates a verified bidirectional relationship
+	sshFirstPeer := sshWorkers[1]
+	glusterFirstPeer := glusterWorkers[1]
+
+	cmd := fmt.Sprintf("gluster peer probe %s", glusterOrchestrator)
+	logging.L().Infow("→ probing orchestrator from peer (ensures bidirectional relationship)", "sshHost", sshFirstPeer, "glusterPeer", glusterFirstPeer, "orchestrator", glusterOrchestrator, "command", cmd)
+
+	retryCfg := retry.NetworkConfig("peer-probe-orchestrator")
+	err := retry.Do(ctx, retryCfg, func() error {
+		stdout, stderr, err := sshPool.Run(ctx, sshFirstPeer, cmd)
+		if err != nil {
+			return fmt.Errorf("failed to probe orchestrator %s from %s: %w (stderr: %s)", glusterOrchestrator, sshFirstPeer, err, stderr)
+		}
+		logging.L().Infow(fmt.Sprintf("✅ peer probe orchestrator: %s", strings.TrimSpace(stdout)))
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
 	// Verify peer status with retry
 	// The orchestrator (glusterWorkers[0]) does NOT appear in its own peer status
 	// So we expect (total workers - 1) peers
 	expectedPeers := len(glusterWorkers) - 1
 	logging.L().Infow("→ verifying GlusterFS peer status", "sshHost", sshOrchestrator, "orchestrator", glusterOrchestrator, "expectedPeers", expectedPeers)
 
-	retryCfg := retry.NetworkConfig("verify-peer-status")
+	retryCfg = retry.NetworkConfig("verify-peer-status")
 	var peerStatusOutput string
 
-	err := retry.Do(ctx, retryCfg, func() error {
+	err = retry.Do(ctx, retryCfg, func() error {
 		cmd := "gluster peer status"
 		stdout, stderr, err := sshPool.Run(ctx, sshOrchestrator, cmd)
 		if err != nil {
