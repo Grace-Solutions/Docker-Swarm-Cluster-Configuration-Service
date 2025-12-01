@@ -889,6 +889,9 @@ func executeScripts(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool, 
 	var enabledScripts []config.ScriptConfig
 	var disabledCount int
 	for _, script := range scripts {
+		// Debug: Log the enabled state of each script
+		log.Debugw("checking script", "name", script.Name, "enabled", script.Enabled)
+
 		if script.Enabled {
 			enabledScripts = append(enabledScripts, script)
 		} else {
@@ -898,9 +901,14 @@ func executeScripts(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool, 
 	}
 
 	if disabledCount > 0 {
-		log.Infow("script summary", "totalScripts", len(scripts), "enabled", len(enabledScripts), "disabled", disabledCount)
+		log.Infow(fmt.Sprintf("%s script summary", phase), "total", len(scripts), "enabled", len(enabledScripts), "disabled", disabledCount)
 	} else {
-		log.Infow("executing scripts", "totalScripts", len(enabledScripts))
+		log.Infow(fmt.Sprintf("executing %s scripts", phase), "enabled", len(enabledScripts))
+	}
+
+	if len(enabledScripts) == 0 {
+		log.Infow(fmt.Sprintf("no enabled %s scripts to execute", phase))
+		return nil
 	}
 
 	for i, script := range enabledScripts {
@@ -954,9 +962,14 @@ func executeScripts(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool, 
 
 			nodeLog.Infow(fmt.Sprintf("→ [%s] executing script on node", node.Hostname))
 			if err := executeScriptOnNode(ctx, sshPool, node, script); err != nil {
-				return fmt.Errorf("failed to execute script %s on %s: %w", script.Name, node.Hostname, err)
+				if script.ContinueOnError {
+					nodeLog.Warnw(fmt.Sprintf("✗ [%s] script failed but continuing (continueOnError=true)", node.Hostname), "error", err)
+				} else {
+					return fmt.Errorf("failed to execute script %s on %s: %w", script.Name, node.Hostname, err)
+				}
+			} else {
+				nodeLog.Infow(fmt.Sprintf("✓ [%s] script executed successfully on node", node.Hostname))
 			}
-			nodeLog.Infow(fmt.Sprintf("✓ [%s] script executed successfully on node", node.Hostname))
 		}
 
 		scriptLog.Infow("✓ script executed successfully on all nodes")

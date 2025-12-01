@@ -13,6 +13,7 @@
     "preScripts": [
       {
         "enabled": true,
+        "continueOnError": false,
         "name": "pre-deployment-check",
         "source": "https://example.com/scripts/pre-check.sh",
         "parameters": "--verbose",
@@ -20,6 +21,7 @@
       },
       {
         "enabled": true,
+        "continueOnError": true,
         "name": "worker-specific-setup",
         "source": "https://example.com/scripts/worker-setup.sh",
         "parameters": "",
@@ -76,6 +78,7 @@
     "postScripts": [
       {
         "enabled": true,
+        "continueOnError": false,
         "name": "post-deployment-validation",
         "source": "https://example.com/scripts/post-validate.sh",
         "parameters": "--verbose",
@@ -83,6 +86,7 @@
       },
       {
         "enabled": true,
+        "continueOnError": true,
         "name": "worker-post-validation",
         "source": "https://example.com/scripts/worker-validate.sh",
         "parameters": "",

@@ -96,6 +96,14 @@ When `glusterDiskManagement: true`:
 
 Pre and post deployment scripts support conditional execution based on node properties. This allows you to run scripts only on specific nodes (e.g., workers only, managers only, specific hostnames, custom labels).
 
+**Script Fields:**
+- `enabled` - Must be `true` for script to execute (default: `false`)
+- `continueOnError` - If `true`, deployment continues even if script fails (default: `false`)
+- `name` - Script name/description for logging
+- `source` - Local file path or HTTP/HTTPS URL
+- `parameters` - Command-line arguments to pass to the script
+- `conditions` - Array of conditions (all must match, empty = run on all nodes)
+
 **Supported Properties:**
 - `role` - Node role (manager/worker)
 - `hostname` - Node hostname
@@ -135,6 +143,15 @@ Pre and post deployment scripts support conditional execution based on node prop
   "preScripts": [
     {
       "enabled": true,
+      "continueOnError": false,
+      "name": "critical-pre-check",
+      "source": "https://example.com/pre-check.sh",
+      "parameters": "--strict",
+      "conditions": []
+    },
+    {
+      "enabled": true,
+      "continueOnError": true,
       "name": "worker-only-script",
       "source": "https://example.com/worker-setup.sh",
       "parameters": "",

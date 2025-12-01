@@ -48,11 +48,16 @@ func (p *Pool) Get(ctx context.Context, host string) (*Client, error) {
 		return nil, fmt.Errorf("no authentication config found for host %s", host)
 	}
 
+	log := logging.L()
+	log.Infow(fmt.Sprintf("→ [%s] establishing SSH connection", host))
+
 	client, err := NewClient(ctx, host, authConfig)
 	if err != nil {
+		log.Errorw(fmt.Sprintf("✗ [%s] SSH connection failed", host), "error", err)
 		return nil, fmt.Errorf("failed to create ssh client for %s: %w", host, err)
 	}
 
+	log.Infow(fmt.Sprintf("✓ [%s] SSH connection established", host))
 	p.clients[host] = client
 	return client, nil
 }

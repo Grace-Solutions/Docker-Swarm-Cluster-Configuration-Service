@@ -11,15 +11,17 @@ import (
 type Config struct {
 	GlobalSettings GlobalSettings `json:"globalSettings"`
 	Nodes          []NodeConfig   `json:"nodes"`
+	ConfigPath     string         `json:"-"` // Path to the config file (not serialized)
 }
 
 // ScriptConfig represents a script to execute on nodes.
 type ScriptConfig struct {
-	Enabled    bool              `json:"enabled"`    // Enable this script (default: true)
-	Name       string            `json:"name"`       // Script name/description
-	Source     string            `json:"source"`     // Local path or http/https URL
-	Parameters string            `json:"parameters"` // Script parameters/arguments
-	Conditions []ScriptCondition `json:"conditions"` // Conditions for script execution (all must match, empty = run on all nodes)
+	Enabled         bool              `json:"enabled"`         // Enable this script (must be true to execute)
+	ContinueOnError bool              `json:"continueOnError"` // Continue deployment if this script fails (default: false)
+	Name            string            `json:"name"`            // Script name/description
+	Source          string            `json:"source"`          // Local path or http/https URL
+	Parameters      string            `json:"parameters"`      // Script parameters/arguments
+	Conditions      []ScriptCondition `json:"conditions"`      // Conditions for script execution (all must match, empty = run on all nodes)
 }
 
 // ScriptCondition represents a condition for script execution.
@@ -119,6 +121,15 @@ func Load(configPath string) (*Config, error) {
 
 	// Apply defaults
 	cfg.ApplyDefaults()
+
+	// Store the absolute config path for debugging
+	absPath, err := filepath.Abs(configPath)
+	if err != nil {
+		// Fallback to original path if absolute path resolution fails
+		cfg.ConfigPath = configPath
+	} else {
+		cfg.ConfigPath = absPath
+	}
 
 	return &cfg, nil
 }

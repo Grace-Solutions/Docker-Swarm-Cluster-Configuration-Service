@@ -149,9 +149,12 @@ func runDeploy(ctx context.Context, configPath string, dryRun bool) {
 	}
 
 	log.Infow("configuration loaded successfully",
+		"configFile", cfg.ConfigPath,
 		"clusterName", cfg.GlobalSettings.ClusterName,
 		"nodes", len(cfg.Nodes),
 		"overlayProvider", cfg.GlobalSettings.OverlayProvider,
+		"preScripts", len(cfg.GlobalSettings.PreScripts),
+		"postScripts", len(cfg.GlobalSettings.PostScripts),
 	)
 
 	if dryRun {
