@@ -137,15 +137,54 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 
 	// Phase 7: Setup Docker Swarm
 	log.Infow("Phase 7: Setting up Docker Swarm")
-	managers, workers := categorizeNodes(cfg)
-	if len(managers) == 0 {
+	sshManagers, sshWorkers := categorizeNodes(cfg)
+	if len(sshManagers) == 0 {
 		return fmt.Errorf("no manager nodes found")
 	}
-	primaryMaster := managers[0] // Use first manager as primary
-	if err := orchestrator.SwarmSetup(ctx, sshPool, primaryMaster, managers, workers, primaryMaster); err != nil {
+
+	// Get overlay hostnames for all nodes if overlay provider is configured
+	allSSHNodes := append(sshManagers, sshWorkers...)
+	overlayHostnameMap := make(map[string]string)
+
+	provider := strings.ToLower(strings.TrimSpace(cfg.GlobalSettings.OverlayProvider))
+	if provider != "" && provider != "none" {
+		log.Infow("→ Retrieving overlay hostnames for Docker Swarm", "overlayProvider", provider, "nodes", len(allSSHNodes))
+		for _, sshHost := range allSSHNodes {
+			overlayHost, err := getOverlayHostnameForNode(ctx, sshPool, sshHost, provider)
+			if err != nil {
+				log.Warnw("failed to get overlay hostname, using SSH hostname", "sshHost", sshHost, "error", err)
+				overlayHostnameMap[sshHost] = sshHost
+			} else {
+				overlayHostnameMap[sshHost] = overlayHost
+				log.Infow("→ overlay hostname", "sshHost", sshHost, "overlayHost", overlayHost)
+			}
+		}
+	} else {
+		// No overlay provider, use SSH hostnames directly
+		for _, sshHost := range allSSHNodes {
+			overlayHostnameMap[sshHost] = sshHost
+		}
+	}
+
+	// Map SSH hostnames to overlay hostnames
+	managers := make([]string, len(sshManagers))
+	for i, sshHost := range sshManagers {
+		managers[i] = overlayHostnameMap[sshHost]
+	}
+	workers := make([]string, len(sshWorkers))
+	for i, sshHost := range sshWorkers {
+		workers[i] = overlayHostnameMap[sshHost]
+	}
+
+	primaryMaster := sshManagers[0]           // SSH hostname for SSH operations
+	primaryMasterOverlay := managers[0]       // Overlay hostname for Swarm advertise address
+
+	log.Infow("→ Using hostnames for Docker Swarm", "primaryMaster", primaryMasterOverlay, "managers", managers, "workers", workers, "overlayProvider", provider)
+
+	if err := orchestrator.SwarmSetup(ctx, sshPool, primaryMaster, managers, workers, primaryMasterOverlay); err != nil {
 		return fmt.Errorf("failed to setup Docker Swarm: %w", err)
 	}
-	log.Infow("✅ Docker Swarm setup complete", "primaryMaster", primaryMaster)
+	log.Infow("✅ Docker Swarm setup complete", "primaryMaster", primaryMasterOverlay)
 
 	// Phase 8: Detect geolocation and apply node labels
 	log.Infow("Phase 8: Detecting geolocation and applying node labels")
@@ -1513,6 +1552,41 @@ func removeOverlayNetworks(ctx context.Context, sshPool *ssh.Pool, primaryManage
 	return nil
 }
 
+// getOverlayHostnameForNode retrieves the overlay network hostname for a single node.
+// Returns the overlay hostname (e.g., netbird FQDN or tailscale DNS name) or falls back to SSH hostname.
+func getOverlayHostnameForNode(ctx context.Context, sshPool *ssh.Pool, sshHost, provider string) (string, error) {
+	switch provider {
+	case "netbird":
+		// Get netbird hostname via SSH
+		cmd := "netbird status | grep -i 'hostname:' | awk '{print $2}' | tr -d '\\n'"
+		stdout, stderr, cmdErr := sshPool.Run(ctx, sshHost, cmd)
+		if cmdErr != nil {
+			return sshHost, fmt.Errorf("netbird status failed: %w (stderr: %s)", cmdErr, stderr)
+		}
+		overlayHost := strings.TrimSpace(stdout)
+		if overlayHost == "" {
+			return sshHost, fmt.Errorf("netbird hostname empty")
+		}
+		return overlayHost, nil
+
+	case "tailscale":
+		// Get tailscale hostname via SSH
+		cmd := "tailscale status --json | jq -r '.Self.DNSName' | tr -d '\\n'"
+		stdout, stderr, cmdErr := sshPool.Run(ctx, sshHost, cmd)
+		if cmdErr != nil {
+			return sshHost, fmt.Errorf("tailscale status failed: %w (stderr: %s)", cmdErr, stderr)
+		}
+		overlayHost := strings.TrimSpace(stdout)
+		if overlayHost == "" {
+			return sshHost, fmt.Errorf("tailscale hostname empty")
+		}
+		return overlayHost, nil
+
+	default:
+		return sshHost, fmt.Errorf("unknown overlay provider: %s", provider)
+	}
+}
+
 // getGlusterHostnames returns the appropriate hostnames for GlusterFS based on overlay provider.
 // If an overlay provider is configured, it retrieves the overlay hostnames (e.g., netbird FQDN).
 // Otherwise, it returns the SSH connection hostnames.
@@ -1531,48 +1605,13 @@ func getGlusterHostnames(ctx context.Context, sshPool *ssh.Pool, cfg *config.Con
 	overlayHostnames := make([]string, 0, len(sshHostnames))
 
 	for _, sshHost := range sshHostnames {
-		var overlayHost string
-
-		switch provider {
-		case "netbird":
-			// Get netbird hostname via SSH
-			cmd := "netbird status | grep -i 'hostname:' | awk '{print $2}' | tr -d '\\n'"
-			stdout, stderr, cmdErr := sshPool.Run(ctx, sshHost, cmd)
-			if cmdErr != nil {
-				log.Warnw("failed to get netbird hostname, falling back to SSH hostname", "sshHost", sshHost, "error", cmdErr, "stderr", stderr)
-				overlayHost = sshHost
-			} else {
-				overlayHost = strings.TrimSpace(stdout)
-				if overlayHost == "" {
-					log.Warnw("netbird hostname empty, falling back to SSH hostname", "sshHost", sshHost)
-					overlayHost = sshHost
-				} else {
-					log.Infow("retrieved netbird hostname", "sshHost", sshHost, "netbirdHostname", overlayHost)
-				}
-			}
-
-		case "tailscale":
-			// Get tailscale hostname via SSH
-			cmd := "tailscale status --json | jq -r '.Self.DNSName' | tr -d '\\n'"
-			stdout, stderr, cmdErr := sshPool.Run(ctx, sshHost, cmd)
-			if cmdErr != nil {
-				log.Warnw("failed to get tailscale hostname, falling back to SSH hostname", "sshHost", sshHost, "error", cmdErr, "stderr", stderr)
-				overlayHost = sshHost
-			} else {
-				overlayHost = strings.TrimSpace(stdout)
-				if overlayHost == "" {
-					log.Warnw("tailscale hostname empty, falling back to SSH hostname", "sshHost", sshHost)
-					overlayHost = sshHost
-				} else {
-					log.Infow("retrieved tailscale hostname", "sshHost", sshHost, "tailscaleHostname", overlayHost)
-				}
-			}
-
-		default:
-			log.Warnw("unknown overlay provider, using SSH hostname", "provider", provider, "sshHost", sshHost)
+		overlayHost, err := getOverlayHostnameForNode(ctx, sshPool, sshHost, provider)
+		if err != nil {
+			log.Warnw("failed to get overlay hostname, falling back to SSH hostname", "sshHost", sshHost, "error", err)
 			overlayHost = sshHost
+		} else {
+			log.Infow("retrieved overlay hostname", "sshHost", sshHost, "overlayHostname", overlayHost)
 		}
-
 		overlayHostnames = append(overlayHostnames, overlayHost)
 	}
 
