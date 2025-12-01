@@ -601,35 +601,33 @@ func configureOverlayOnNode(ctx context.Context, sshPool *ssh.Pool, node config.
 	}
 }
 
-// redactSetupKey redacts setup keys for logging (shows first 8 chars + "...")
-func redactSetupKey(key string) string {
-	if key == "" {
+// maskSetupKey masks setup keys for logging (replaces key with asterisks)
+func maskSetupKey(fullConfig string) string {
+	if fullConfig == "" {
 		return ""
 	}
 
-	// Remove common flags to extract just the key
-	keyOnly := key
-	if len(key) > 20 {
-		// If it looks like it has flags, try to extract the key part
-		// Common patterns: "--setup-key KEY" or just "KEY"
-		parts := strings.Fields(key)
-		for i, part := range parts {
-			if part == "--setup-key" && i+1 < len(parts) {
-				keyOnly = parts[i+1]
-				break
-			} else if !strings.HasPrefix(part, "-") && len(part) > 20 {
-				keyOnly = part
-				break
-			}
+	// Replace the actual key value with asterisks while preserving the command structure
+	// Common patterns: "--setup-key KEY" or "--authkey KEY" or just "KEY"
+	parts := strings.Fields(fullConfig)
+	masked := make([]string, len(parts))
+
+	for i, part := range parts {
+		// If this is a flag like --setup-key or --authkey, keep it
+		if strings.HasPrefix(part, "-") {
+			masked[i] = part
+		} else if i > 0 && (strings.Contains(parts[i-1], "setup-key") || strings.Contains(parts[i-1], "authkey")) {
+			// This is the key value after a flag, mask it
+			masked[i] = strings.Repeat("*", len(part))
+		} else if len(part) > 20 && !strings.HasPrefix(part, "-") {
+			// This looks like a bare key (long string without flag prefix), mask it
+			masked[i] = strings.Repeat("*", len(part))
+		} else {
+			masked[i] = part
 		}
 	}
 
-	if len(keyOnly) <= 8 {
-		return "***"
-	}
-
-	// Show first 8 characters + "..."
-	return keyOnly[:8] + "..." + " (redacted)"
+	return strings.Join(masked, " ")
 }
 
 // configureNetbirdOnNode configures Netbird on a single node idempotently.
@@ -653,15 +651,21 @@ func configureNetbirdOnNode(ctx context.Context, sshPool *ssh.Pool, node config.
 	if stdout != "INSTALLED\n" {
 		// Install netbird if not present (with retry)
 		installURL := "https://pkgs.netbird.io/install.sh"
-		log.Infow(fmt.Sprintf("→ [%s] netbird not found, downloading from %s (this may take 30-60 seconds)", node.Hostname, installURL))
+		installCmd := fmt.Sprintf("curl -fsSL %s | sh", installURL)
+
+		log.Infow(fmt.Sprintf("→ [%s] netbird not found, downloading and installing", node.Hostname))
+		log.Infow(fmt.Sprintf("→ [%s] download URL: %s", node.Hostname, installURL))
+		log.Infow(fmt.Sprintf("→ [%s] install command: %s", node.Hostname, installCmd))
+		log.Infow(fmt.Sprintf("→ [%s] executing installation (this may take 30-60 seconds)...", node.Hostname))
+
 		retryCfg := retry.NetworkConfig(fmt.Sprintf("install-netbird-%s", node.Hostname))
 		err = retry.Do(ctx, retryCfg, func() error {
-			installCmd := fmt.Sprintf("curl -fsSL %s | sh", installURL)
 			stdout, stderr, err := sshPool.Run(ctx, node.Hostname, installCmd)
 			if err != nil {
+				log.Warnw(fmt.Sprintf("✗ [%s] netbird installation failed", node.Hostname), "error", err, "stderr", stderr, "stdout", stdout)
 				return fmt.Errorf("failed to install netbird: %w (stderr: %s)", err, stderr)
 			}
-			log.Infow(fmt.Sprintf("✓ [%s] netbird download completed successfully", node.Hostname), "stdout", stdout)
+			log.Infow(fmt.Sprintf("✓ [%s] netbird installation completed", node.Hostname), "stdout", stdout, "stderr", stderr)
 			return nil
 		})
 		if err != nil {
@@ -674,22 +678,25 @@ func configureNetbirdOnNode(ctx context.Context, sshPool *ssh.Pool, node config.
 
 	// Start netbird with setup key if provided (with retry)
 	upCmd := "netbird up"
-	redactedCmd := "netbird up"
+	maskedCmd := "netbird up"
 	if overlayConfig != "" {
 		upCmd = fmt.Sprintf("netbird up %s", overlayConfig)
-		// Redact the setup key for logging
-		redactedCmd = fmt.Sprintf("netbird up %s", redactSetupKey(overlayConfig))
+		// Mask the setup key for logging
+		maskedCmd = fmt.Sprintf("netbird up %s", maskSetupKey(overlayConfig))
 	}
 
-	log.Infow(fmt.Sprintf("→ [%s] starting netbird and connecting to network", node.Hostname), "command", redactedCmd)
+	log.Infow(fmt.Sprintf("→ [%s] starting netbird and connecting to network", node.Hostname))
+	log.Infow(fmt.Sprintf("→ [%s] command: %s", node.Hostname, maskedCmd))
+	log.Infow(fmt.Sprintf("→ [%s] executing netbird up...", node.Hostname))
+
 	retryCfg := retry.NetworkConfig(fmt.Sprintf("start-netbird-%s", node.Hostname))
 	err = retry.Do(ctx, retryCfg, func() error {
 		stdout, stderr, err := sshPool.Run(ctx, node.Hostname, upCmd)
 		if err != nil {
-			log.Warnw(fmt.Sprintf("✗ [%s] netbird up failed", node.Hostname), "stderr", stderr, "stdout", stdout)
+			log.Warnw(fmt.Sprintf("✗ [%s] netbird up failed", node.Hostname), "error", err, "stderr", stderr, "stdout", stdout)
 			return fmt.Errorf("failed to start netbird: %w (stderr: %s)", err, stderr)
 		}
-		log.Infow(fmt.Sprintf("✓ [%s] netbird up command completed", node.Hostname), "stdout", stdout, "stderr", stderr)
+		log.Infow(fmt.Sprintf("✓ [%s] netbird up completed", node.Hostname), "stdout", stdout, "stderr", stderr)
 		return nil
 	})
 	if err != nil {
@@ -731,15 +738,21 @@ func configureTailscaleOnNode(ctx context.Context, sshPool *ssh.Pool, node confi
 	if stdout != "INSTALLED\n" {
 		// Install tailscale if not present (with retry)
 		installURL := "https://tailscale.com/install.sh"
-		log.Infow(fmt.Sprintf("→ [%s] tailscale not found, downloading from %s (this may take 30-60 seconds)", node.Hostname, installURL))
+		installCmd := fmt.Sprintf("curl -fsSL %s | sh", installURL)
+
+		log.Infow(fmt.Sprintf("→ [%s] tailscale not found, downloading and installing", node.Hostname))
+		log.Infow(fmt.Sprintf("→ [%s] download URL: %s", node.Hostname, installURL))
+		log.Infow(fmt.Sprintf("→ [%s] install command: %s", node.Hostname, installCmd))
+		log.Infow(fmt.Sprintf("→ [%s] executing installation (this may take 30-60 seconds)...", node.Hostname))
+
 		retryCfg := retry.NetworkConfig(fmt.Sprintf("install-tailscale-%s", node.Hostname))
 		err = retry.Do(ctx, retryCfg, func() error {
-			installCmd := fmt.Sprintf("curl -fsSL %s | sh", installURL)
 			stdout, stderr, err := sshPool.Run(ctx, node.Hostname, installCmd)
 			if err != nil {
+				log.Warnw(fmt.Sprintf("✗ [%s] tailscale installation failed", node.Hostname), "error", err, "stderr", stderr, "stdout", stdout)
 				return fmt.Errorf("failed to install tailscale: %w (stderr: %s)", err, stderr)
 			}
-			log.Infow(fmt.Sprintf("✓ [%s] tailscale download completed successfully", node.Hostname), "stdout", stdout)
+			log.Infow(fmt.Sprintf("✓ [%s] tailscale installation completed", node.Hostname), "stdout", stdout, "stderr", stderr)
 			return nil
 		})
 		if err != nil {
@@ -752,22 +765,25 @@ func configureTailscaleOnNode(ctx context.Context, sshPool *ssh.Pool, node confi
 
 	// Start tailscale with auth key if provided (with retry)
 	upCmd := "tailscale up"
-	redactedCmd := "tailscale up"
+	maskedCmd := "tailscale up"
 	if overlayConfig != "" {
 		upCmd = fmt.Sprintf("tailscale up --authkey='%s'", overlayConfig)
-		// Redact the auth key for logging
-		redactedCmd = fmt.Sprintf("tailscale up --authkey='%s'", redactSetupKey(overlayConfig))
+		// Mask the auth key for logging
+		maskedCmd = fmt.Sprintf("tailscale up --authkey='%s'", maskSetupKey(overlayConfig))
 	}
 
-	log.Infow(fmt.Sprintf("→ [%s] starting tailscale and connecting to network", node.Hostname), "command", redactedCmd)
+	log.Infow(fmt.Sprintf("→ [%s] starting tailscale and connecting to network", node.Hostname))
+	log.Infow(fmt.Sprintf("→ [%s] command: %s", node.Hostname, maskedCmd))
+	log.Infow(fmt.Sprintf("→ [%s] executing tailscale up...", node.Hostname))
+
 	retryCfg := retry.NetworkConfig(fmt.Sprintf("start-tailscale-%s", node.Hostname))
 	err = retry.Do(ctx, retryCfg, func() error {
 		stdout, stderr, err := sshPool.Run(ctx, node.Hostname, upCmd)
 		if err != nil {
-			log.Warnw(fmt.Sprintf("✗ [%s] tailscale up failed", node.Hostname), "stderr", stderr, "stdout", stdout)
+			log.Warnw(fmt.Sprintf("✗ [%s] tailscale up failed", node.Hostname), "error", err, "stderr", stderr, "stdout", stdout)
 			return fmt.Errorf("failed to start tailscale: %w (stderr: %s)", err, stderr)
 		}
-		log.Infow(fmt.Sprintf("✓ [%s] tailscale up command completed", node.Hostname), "stdout", stdout, "stderr", stderr)
+		log.Infow(fmt.Sprintf("✓ [%s] tailscale up completed", node.Hostname), "stdout", stdout, "stderr", stderr)
 		return nil
 	})
 	if err != nil {
