@@ -96,28 +96,28 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 	log.Infow("✅ Overlay network configured")
 
 	// Phase 6: Setup GlusterFS if enabled
-	glusterWorkers := getGlusterWorkers(cfg)
-	if len(glusterWorkers) > 0 {
-		log.Infow("Phase 6: Setting up GlusterFS", "workers", len(glusterWorkers), "diskManagement", cfg.GlobalSettings.GlusterDiskManagement, "forceRecreate", cfg.GlobalSettings.GlusterForceRecreate)
+	sshGlusterWorkers := getGlusterWorkers(cfg)
+	if len(sshGlusterWorkers) > 0 {
+		log.Infow("Phase 6: Setting up GlusterFS", "workers", len(sshGlusterWorkers), "diskManagement", cfg.GlobalSettings.GlusterDiskManagement, "forceRecreate", cfg.GlobalSettings.GlusterForceRecreate)
 
 		// If force recreate is enabled, teardown existing GlusterFS cluster first
 		if cfg.GlobalSettings.GlusterForceRecreate {
 			log.Infow("→ Force recreate enabled, tearing down existing GlusterFS cluster")
-			if err := teardownGlusterFS(ctx, sshPool, glusterWorkers, cfg.GlobalSettings.GlusterVolume, cfg.GlobalSettings.GlusterMount, cfg.GlobalSettings.GlusterBrick); err != nil {
+			if err := teardownGlusterFS(ctx, sshPool, sshGlusterWorkers, cfg.GlobalSettings.GlusterVolume, cfg.GlobalSettings.GlusterMount, cfg.GlobalSettings.GlusterBrick); err != nil {
 				log.Warnw("⚠️ GlusterFS teardown had errors (continuing anyway)", "error", err)
 			} else {
 				log.Infow("✓ GlusterFS teardown complete")
 			}
 		}
 
-		// Get overlay hostnames for GlusterFS if overlay provider is configured
-		glusterHostnames, err := getGlusterHostnames(ctx, sshPool, cfg, glusterWorkers)
+		// Get overlay FQDNs for GlusterFS if overlay provider is configured
+		glusterFQDNs, err := getGlusterHostnames(ctx, sshPool, cfg, sshGlusterWorkers)
 		if err != nil {
 			return fmt.Errorf("failed to get GlusterFS hostnames: %w", err)
 		}
-		log.Infow("→ Using hostnames for GlusterFS", "hostnames", glusterHostnames, "overlayProvider", cfg.GlobalSettings.OverlayProvider)
+		log.Infow("→ Using FQDNs for GlusterFS", "fqdns", glusterFQDNs, "overlayProvider", cfg.GlobalSettings.OverlayProvider)
 
-		validWorkers, err := orchestrator.GlusterSetup(ctx, sshPool, glusterHostnames,
+		validWorkers, err := orchestrator.GlusterSetup(ctx, sshPool, sshGlusterWorkers, glusterFQDNs,
 			cfg.GlobalSettings.GlusterVolume,
 			cfg.GlobalSettings.GlusterMount,
 			cfg.GlobalSettings.GlusterBrick,
@@ -129,7 +129,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 		if validWorkers == nil || len(validWorkers) == 0 {
 			log.Warnw("⚠️ GlusterFS setup skipped - no workers with available disks")
 		} else {
-			log.Infow("✅ GlusterFS setup complete", "activeWorkers", len(validWorkers), "totalWorkers", len(glusterWorkers))
+			log.Infow("✅ GlusterFS setup complete", "activeWorkers", len(validWorkers), "totalWorkers", len(sshGlusterWorkers))
 		}
 	} else {
 		log.Infow("Phase 6: Skipping GlusterFS (no workers with glusterEnabled)")
@@ -142,49 +142,49 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("no manager nodes found")
 	}
 
-	// Get overlay hostnames for all nodes if overlay provider is configured
+	// Get overlay info for all nodes if overlay provider is configured
 	allSSHNodes := append(sshManagers, sshWorkers...)
-	overlayHostnameMap := make(map[string]string)
+	overlayInfoMap := make(map[string]OverlayInfo)
 
 	provider := strings.ToLower(strings.TrimSpace(cfg.GlobalSettings.OverlayProvider))
 	if provider != "" && provider != "none" {
-		log.Infow("→ Retrieving overlay hostnames for Docker Swarm", "overlayProvider", provider, "nodes", len(allSSHNodes))
+		log.Infow("→ Retrieving overlay info for Docker Swarm", "overlayProvider", provider, "nodes", len(allSSHNodes))
 		for _, sshHost := range allSSHNodes {
-			overlayHost, err := getOverlayHostnameForNode(ctx, sshPool, sshHost, provider)
+			overlayInfo, err := getOverlayInfoForNode(ctx, sshPool, sshHost, provider)
 			if err != nil {
-				log.Warnw("failed to get overlay hostname, using SSH hostname", "sshHost", sshHost, "error", err)
-				overlayHostnameMap[sshHost] = sshHost
+				log.Warnw("failed to get overlay info, using SSH hostname", "sshHost", sshHost, "error", err)
+				overlayInfoMap[sshHost] = OverlayInfo{FQDN: sshHost, IP: sshHost}
 			} else {
-				overlayHostnameMap[sshHost] = overlayHost
-				log.Infow("→ overlay hostname", "sshHost", sshHost, "overlayHost", overlayHost)
+				overlayInfoMap[sshHost] = overlayInfo
+				log.Infow("→ overlay info", "sshHost", sshHost, "fqdn", overlayInfo.FQDN, "ip", overlayInfo.IP)
 			}
 		}
 	} else {
 		// No overlay provider, use SSH hostnames directly
 		for _, sshHost := range allSSHNodes {
-			overlayHostnameMap[sshHost] = sshHost
+			overlayInfoMap[sshHost] = OverlayInfo{FQDN: sshHost, IP: sshHost}
 		}
 	}
 
-	// Map SSH hostnames to overlay hostnames
-	managers := make([]string, len(sshManagers))
+	// Map SSH hostnames to overlay IPs (Docker requires IP addresses for advertise-addr)
+	managerIPs := make([]string, len(sshManagers))
 	for i, sshHost := range sshManagers {
-		managers[i] = overlayHostnameMap[sshHost]
+		managerIPs[i] = overlayInfoMap[sshHost].IP
 	}
-	workers := make([]string, len(sshWorkers))
+	workerIPs := make([]string, len(sshWorkers))
 	for i, sshHost := range sshWorkers {
-		workers[i] = overlayHostnameMap[sshHost]
+		workerIPs[i] = overlayInfoMap[sshHost].IP
 	}
 
-	primaryMaster := sshManagers[0]           // SSH hostname for SSH operations
-	primaryMasterOverlay := managers[0]       // Overlay hostname for Swarm advertise address
+	primaryMaster := sshManagers[0]                    // SSH hostname for SSH operations
+	primaryMasterOverlayIP := overlayInfoMap[sshManagers[0]].IP  // Overlay IP for Swarm advertise address
 
-	log.Infow("→ Using hostnames for Docker Swarm", "primaryMaster", primaryMasterOverlay, "managers", managers, "workers", workers, "overlayProvider", provider)
+	log.Infow("→ Using overlay IPs for Docker Swarm", "primaryMasterIP", primaryMasterOverlayIP, "managerIPs", managerIPs, "workerIPs", workerIPs, "overlayProvider", provider)
 
-	if err := orchestrator.SwarmSetup(ctx, sshPool, primaryMaster, managers, workers, primaryMasterOverlay); err != nil {
+	if err := orchestrator.SwarmSetup(ctx, sshPool, primaryMaster, managerIPs, workerIPs, primaryMasterOverlayIP); err != nil {
 		return fmt.Errorf("failed to setup Docker Swarm: %w", err)
 	}
-	log.Infow("✅ Docker Swarm setup complete", "primaryMaster", primaryMasterOverlay)
+	log.Infow("✅ Docker Swarm setup complete", "primaryMasterIP", primaryMasterOverlayIP)
 
 	// Phase 8: Detect geolocation and apply node labels
 	log.Infow("Phase 8: Detecting geolocation and applying node labels")
@@ -1552,39 +1552,74 @@ func removeOverlayNetworks(ctx context.Context, sshPool *ssh.Pool, primaryManage
 	return nil
 }
 
-// getOverlayHostnameForNode retrieves the overlay network hostname for a single node.
-// Returns the overlay hostname (e.g., netbird FQDN or tailscale DNS name) or falls back to SSH hostname.
-func getOverlayHostnameForNode(ctx context.Context, sshPool *ssh.Pool, sshHost, provider string) (string, error) {
+// OverlayInfo contains overlay network information for a node
+type OverlayInfo struct {
+	FQDN string // Fully qualified domain name (e.g., node1.netbird.cloud)
+	IP   string // Overlay IP address without CIDR (e.g., 100.76.202.130)
+}
+
+// getOverlayInfoForNode retrieves the overlay network information for a single node.
+// Returns the overlay FQDN and IP, or falls back to SSH hostname for both.
+func getOverlayInfoForNode(ctx context.Context, sshPool *ssh.Pool, sshHost, provider string) (OverlayInfo, error) {
 	switch provider {
 	case "netbird":
-		// Get netbird hostname via SSH using JSON output
-		cmd := "netbird status --json | jq -r '.fqdn' | tr -d '\\n'"
+		// Get netbird info via SSH using JSON output
+		cmd := "netbird status --json | jq -r '.fqdn + \" \" + .netbirdIp' | tr -d '\\n'"
 		stdout, stderr, cmdErr := sshPool.Run(ctx, sshHost, cmd)
 		if cmdErr != nil {
-			return sshHost, fmt.Errorf("netbird status failed: %w (stderr: %s)", cmdErr, stderr)
+			return OverlayInfo{FQDN: sshHost, IP: sshHost}, fmt.Errorf("netbird status failed: %w (stderr: %s)", cmdErr, stderr)
 		}
-		overlayHost := strings.TrimSpace(stdout)
-		if overlayHost == "" || overlayHost == "null" {
-			return sshHost, fmt.Errorf("netbird fqdn empty or null")
+
+		parts := strings.Fields(strings.TrimSpace(stdout))
+		if len(parts) != 2 {
+			return OverlayInfo{FQDN: sshHost, IP: sshHost}, fmt.Errorf("unexpected netbird output format: %s", stdout)
 		}
-		return overlayHost, nil
+
+		fqdn := parts[0]
+		ipWithCIDR := parts[1]
+
+		// Remove CIDR notation from IP (e.g., "100.76.202.130/16" -> "100.76.202.130")
+		ip := strings.Split(ipWithCIDR, "/")[0]
+
+		if fqdn == "" || fqdn == "null" || ip == "" || ip == "null" {
+			return OverlayInfo{FQDN: sshHost, IP: sshHost}, fmt.Errorf("netbird fqdn or ip empty or null")
+		}
+
+		return OverlayInfo{FQDN: fqdn, IP: ip}, nil
 
 	case "tailscale":
-		// Get tailscale hostname via SSH
-		cmd := "tailscale status --json | jq -r '.Self.DNSName' | tr -d '\\n'"
+		// Get tailscale info via SSH using JSON output
+		cmd := "tailscale status --json | jq -r '.Self.DNSName + \" \" + .Self.TailscaleIPs[0]' | tr -d '\\n'"
 		stdout, stderr, cmdErr := sshPool.Run(ctx, sshHost, cmd)
 		if cmdErr != nil {
-			return sshHost, fmt.Errorf("tailscale status failed: %w (stderr: %s)", cmdErr, stderr)
+			return OverlayInfo{FQDN: sshHost, IP: sshHost}, fmt.Errorf("tailscale status failed: %w (stderr: %s)", cmdErr, stderr)
 		}
-		overlayHost := strings.TrimSpace(stdout)
-		if overlayHost == "" || overlayHost == "null" {
-			return sshHost, fmt.Errorf("tailscale hostname empty or null")
+
+		parts := strings.Fields(strings.TrimSpace(stdout))
+		if len(parts) != 2 {
+			return OverlayInfo{FQDN: sshHost, IP: sshHost}, fmt.Errorf("unexpected tailscale output format: %s", stdout)
 		}
-		return overlayHost, nil
+
+		fqdn := parts[0]
+		ip := parts[1]
+
+		if fqdn == "" || fqdn == "null" || ip == "" || ip == "null" {
+			return OverlayInfo{FQDN: sshHost, IP: sshHost}, fmt.Errorf("tailscale fqdn or ip empty or null")
+		}
+
+		return OverlayInfo{FQDN: fqdn, IP: ip}, nil
 
 	default:
-		return sshHost, fmt.Errorf("unknown overlay provider: %s", provider)
+		return OverlayInfo{FQDN: sshHost, IP: sshHost}, fmt.Errorf("unknown overlay provider: %s", provider)
 	}
+}
+
+// getOverlayHostnameForNode retrieves the overlay network hostname for a single node.
+// Returns the overlay hostname (e.g., netbird FQDN or tailscale DNS name) or falls back to SSH hostname.
+// This is a convenience wrapper around getOverlayInfoForNode that only returns the FQDN.
+func getOverlayHostnameForNode(ctx context.Context, sshPool *ssh.Pool, sshHost, provider string) (string, error) {
+	info, err := getOverlayInfoForNode(ctx, sshPool, sshHost, provider)
+	return info.FQDN, err
 }
 
 // getGlusterHostnames returns the appropriate hostnames for GlusterFS based on overlay provider.
