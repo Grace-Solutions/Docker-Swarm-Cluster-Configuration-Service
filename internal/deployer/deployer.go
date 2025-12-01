@@ -98,8 +98,26 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 	// Phase 6: Setup GlusterFS if enabled
 	glusterWorkers := getGlusterWorkers(cfg)
 	if len(glusterWorkers) > 0 {
-		log.Infow("Phase 6: Setting up GlusterFS", "workers", len(glusterWorkers), "diskManagement", cfg.GlobalSettings.GlusterDiskManagement)
-		validWorkers, err := orchestrator.GlusterSetup(ctx, sshPool, glusterWorkers,
+		log.Infow("Phase 6: Setting up GlusterFS", "workers", len(glusterWorkers), "diskManagement", cfg.GlobalSettings.GlusterDiskManagement, "forceRecreate", cfg.GlobalSettings.GlusterForceRecreate)
+
+		// If force recreate is enabled, teardown existing GlusterFS cluster first
+		if cfg.GlobalSettings.GlusterForceRecreate {
+			log.Infow("→ Force recreate enabled, tearing down existing GlusterFS cluster")
+			if err := teardownGlusterFS(ctx, sshPool, glusterWorkers, cfg.GlobalSettings.GlusterVolume, cfg.GlobalSettings.GlusterMount, cfg.GlobalSettings.GlusterBrick); err != nil {
+				log.Warnw("⚠️ GlusterFS teardown had errors (continuing anyway)", "error", err)
+			} else {
+				log.Infow("✓ GlusterFS teardown complete")
+			}
+		}
+
+		// Get overlay hostnames for GlusterFS if overlay provider is configured
+		glusterHostnames, err := getGlusterHostnames(ctx, sshPool, cfg, glusterWorkers)
+		if err != nil {
+			return fmt.Errorf("failed to get GlusterFS hostnames: %w", err)
+		}
+		log.Infow("→ Using hostnames for GlusterFS", "hostnames", glusterHostnames, "overlayProvider", cfg.GlobalSettings.OverlayProvider)
+
+		validWorkers, err := orchestrator.GlusterSetup(ctx, sshPool, glusterHostnames,
 			cfg.GlobalSettings.GlusterVolume,
 			cfg.GlobalSettings.GlusterMount,
 			cfg.GlobalSettings.GlusterBrick,
@@ -1492,5 +1510,124 @@ func removeOverlayNetworks(ctx context.Context, sshPool *ssh.Pool, primaryManage
 		}
 	}
 
+	return nil
+}
+
+// getGlusterHostnames returns the appropriate hostnames for GlusterFS based on overlay provider.
+// If an overlay provider is configured, it retrieves the overlay hostnames (e.g., netbird FQDN).
+// Otherwise, it returns the SSH connection hostnames.
+func getGlusterHostnames(ctx context.Context, sshPool *ssh.Pool, cfg *config.Config, sshHostnames []string) ([]string, error) {
+	log := logging.L().With("component", "gluster-hostnames")
+
+	provider := strings.ToLower(strings.TrimSpace(cfg.GlobalSettings.OverlayProvider))
+
+	// If no overlay provider, use SSH hostnames directly
+	if provider == "" || provider == "none" {
+		log.Infow("no overlay provider, using SSH hostnames for GlusterFS", "hostnames", sshHostnames)
+		return sshHostnames, nil
+	}
+
+	// Get overlay hostnames for each worker
+	overlayHostnames := make([]string, 0, len(sshHostnames))
+
+	for _, sshHost := range sshHostnames {
+		var overlayHost string
+
+		switch provider {
+		case "netbird":
+			// Get netbird hostname via SSH
+			cmd := "netbird status | grep -i 'hostname:' | awk '{print $2}' | tr -d '\\n'"
+			stdout, stderr, cmdErr := sshPool.Run(ctx, sshHost, cmd)
+			if cmdErr != nil {
+				log.Warnw("failed to get netbird hostname, falling back to SSH hostname", "sshHost", sshHost, "error", cmdErr, "stderr", stderr)
+				overlayHost = sshHost
+			} else {
+				overlayHost = strings.TrimSpace(stdout)
+				if overlayHost == "" {
+					log.Warnw("netbird hostname empty, falling back to SSH hostname", "sshHost", sshHost)
+					overlayHost = sshHost
+				} else {
+					log.Infow("retrieved netbird hostname", "sshHost", sshHost, "netbirdHostname", overlayHost)
+				}
+			}
+
+		case "tailscale":
+			// Get tailscale hostname via SSH
+			cmd := "tailscale status --json | jq -r '.Self.DNSName' | tr -d '\\n'"
+			stdout, stderr, cmdErr := sshPool.Run(ctx, sshHost, cmd)
+			if cmdErr != nil {
+				log.Warnw("failed to get tailscale hostname, falling back to SSH hostname", "sshHost", sshHost, "error", cmdErr, "stderr", stderr)
+				overlayHost = sshHost
+			} else {
+				overlayHost = strings.TrimSpace(stdout)
+				if overlayHost == "" {
+					log.Warnw("tailscale hostname empty, falling back to SSH hostname", "sshHost", sshHost)
+					overlayHost = sshHost
+				} else {
+					log.Infow("retrieved tailscale hostname", "sshHost", sshHost, "tailscaleHostname", overlayHost)
+				}
+			}
+
+		default:
+			log.Warnw("unknown overlay provider, using SSH hostname", "provider", provider, "sshHost", sshHost)
+			overlayHost = sshHost
+		}
+
+		overlayHostnames = append(overlayHostnames, overlayHost)
+	}
+
+	return overlayHostnames, nil
+}
+
+// teardownGlusterFS tears down an existing GlusterFS cluster.
+func teardownGlusterFS(ctx context.Context, sshPool *ssh.Pool, workers []string, volume, mount, brick string) error {
+	log := logging.L().With("component", "gluster-teardown")
+
+	if len(workers) == 0 {
+		return nil
+	}
+
+	orchestrator := workers[0]
+
+	// Stop and delete volume
+	log.Infow("→ stopping GlusterFS volume", "volume", volume, "orchestrator", orchestrator)
+	stopCmd := fmt.Sprintf("gluster volume stop %s force 2>/dev/null || true", volume)
+	_, _, _ = sshPool.Run(ctx, orchestrator, stopCmd)
+
+	log.Infow("→ deleting GlusterFS volume", "volume", volume, "orchestrator", orchestrator)
+	deleteCmd := fmt.Sprintf("gluster volume delete %s 2>/dev/null || true", volume)
+	_, _, _ = sshPool.Run(ctx, orchestrator, deleteCmd)
+
+	// Detach peers
+	if len(workers) > 1 {
+		for _, worker := range workers[1:] {
+			log.Infow("→ detaching peer", "peer", worker, "orchestrator", orchestrator)
+			detachCmd := fmt.Sprintf("gluster peer detach %s force 2>/dev/null || true", worker)
+			_, _, _ = sshPool.Run(ctx, orchestrator, detachCmd)
+		}
+	}
+
+	// Unmount and clean up on all workers
+	for _, worker := range workers {
+		log.Infow("→ cleaning up GlusterFS on worker", "worker", worker)
+
+		// Unmount
+		unmountCmd := fmt.Sprintf("umount %s 2>/dev/null || true", mount)
+		_, _, _ = sshPool.Run(ctx, worker, unmountCmd)
+
+		// Remove from fstab
+		fstabCmd := fmt.Sprintf("sed -i '\\|%s|d' /etc/fstab 2>/dev/null || true", volume)
+		_, _, _ = sshPool.Run(ctx, worker, fstabCmd)
+
+		// Remove brick directory contents (but keep the mount point if it's a dedicated disk)
+		cleanCmd := fmt.Sprintf("rm -rf %s/* 2>/dev/null || true", brick)
+		_, _, _ = sshPool.Run(ctx, worker, cleanCmd)
+
+		// Remove mount directory if it's not a disk mount point
+		removeMountCmd := fmt.Sprintf("mountpoint -q %s || rm -rf %s 2>/dev/null || true", mount, mount)
+		_, _, _ = sshPool.Run(ctx, worker, removeMountCmd)
+	}
+
+	log.Infow("✓ GlusterFS teardown complete")
 	return nil
 }
