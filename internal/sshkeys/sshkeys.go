@@ -1,6 +1,7 @@
 package sshkeys
 
 import (
+	"bufio"
 	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"clusterctl/internal/logging"
@@ -19,16 +21,67 @@ const (
 	// DefaultKeyDir is the default directory for SSH keys (relative to binary)
 	DefaultKeyDir = "sshkeys"
 	// PrivateKeyFileName is the name of the private key file
-	PrivateKeyFileName = "PrivateKey"
+	PrivateKeyFileName = "PrivateKey.ppk"
 	// PublicKeyFileName is the name of the public key file
-	PublicKeyFileName = "PublicKey"
+	PublicKeyFileName = "PublicKey.pub"
+	// PasswordFileName is the name of the password file
+	PasswordFileName = "PrivateKey.pwd"
 )
 
 // KeyPair represents an SSH key pair.
 type KeyPair struct {
 	PrivateKeyPath string
 	PublicKeyPath  string
+	PasswordPath   string // Path to password file (may be empty)
+	Password       string // Password for private key (empty if no password)
 	PublicKey      string // OpenSSH format public key
+}
+
+// generateRandomPassword generates a cryptographically secure random password.
+func generateRandomPassword(length int) (string, error) {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{}|;:,.<>?"
+	password := make([]byte, length)
+
+	for i := range password {
+		// Generate random index
+		randomBytes := make([]byte, 1)
+		if _, err := rand.Read(randomBytes); err != nil {
+			return "", fmt.Errorf("failed to generate random bytes: %w", err)
+		}
+		password[i] = charset[int(randomBytes[0])%len(charset)]
+	}
+
+	return string(password), nil
+}
+
+// readPasswordFile reads the password from a .pwd file.
+// Returns empty string if file doesn't exist or first line is blank.
+func readPasswordFile(passwordPath string) (string, error) {
+	// Check if password file exists
+	if _, err := os.Stat(passwordPath); os.IsNotExist(err) {
+		return "", nil // No password file = no password
+	}
+
+	// Read password file
+	file, err := os.Open(passwordPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open password file: %w", err)
+	}
+	defer file.Close()
+
+	// Read first line
+	scanner := bufio.NewScanner(file)
+	if scanner.Scan() {
+		password := strings.TrimSpace(scanner.Text())
+		return password, nil
+	}
+
+	// Empty file or error reading
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("failed to read password file: %w", err)
+	}
+
+	return "", nil // Empty file = no password
 }
 
 // getLatestKeyFolder returns the latest key folder based on modified date descending.
@@ -95,6 +148,7 @@ func EnsureKeyPair(keyDir string) (*KeyPair, error) {
 		// Use existing key pair from latest folder
 		privateKeyPath := filepath.Join(latestFolder, PrivateKeyFileName)
 		publicKeyPath := filepath.Join(latestFolder, PublicKeyFileName)
+		passwordPath := filepath.Join(latestFolder, PasswordFileName)
 
 		if _, err := os.Stat(privateKeyPath); err == nil {
 			log.Infow("using existing SSH key pair", "path", privateKeyPath)
@@ -105,9 +159,23 @@ func EnsureKeyPair(keyDir string) (*KeyPair, error) {
 				return nil, fmt.Errorf("failed to read public key: %w", err)
 			}
 
+			// Read password if password file exists
+			password, err := readPasswordFile(passwordPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read password file: %w", err)
+			}
+
+			if password != "" {
+				log.Infow("private key password loaded from file", "passwordFile", passwordPath)
+			} else {
+				log.Infow("no password file found or empty, using unencrypted private key")
+			}
+
 			return &KeyPair{
 				PrivateKeyPath: privateKeyPath,
 				PublicKeyPath:  publicKeyPath,
+				PasswordPath:   passwordPath,
+				Password:       password,
 				PublicKey:      string(publicKeyBytes),
 			}, nil
 		}
@@ -123,8 +191,15 @@ func EnsureKeyPair(keyDir string) (*KeyPair, error) {
 
 	privateKeyPath := filepath.Join(timestampedDir, PrivateKeyFileName)
 	publicKeyPath := filepath.Join(timestampedDir, PublicKeyFileName)
+	passwordPath := filepath.Join(timestampedDir, PasswordFileName)
 
 	log.Infow("generating new SSH key pair", "path", privateKeyPath)
+
+	// Generate random password for private key encryption
+	password, err := generateRandomPassword(32)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate password: %w", err)
+	}
 
 	// Generate ED25519 key pair
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -132,9 +207,9 @@ func EnsureKeyPair(keyDir string) (*KeyPair, error) {
 		return nil, fmt.Errorf("failed to generate key pair: %w", err)
 	}
 
-	// Marshal private key to OpenSSH format
+	// Marshal private key to OpenSSH format with password encryption
 	// ssh.MarshalPrivateKey returns a *pem.Block with the private key in OpenSSH format
-	privateKeyPEM, err := ssh.MarshalPrivateKey(crypto.PrivateKey(privateKey), "")
+	privateKeyPEM, err := ssh.MarshalPrivateKey(crypto.PrivateKey(privateKey), password)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal private key: %w", err)
 	}
@@ -145,9 +220,14 @@ func EnsureKeyPair(keyDir string) (*KeyPair, error) {
 		return nil, fmt.Errorf("failed to encode private key to PEM format")
 	}
 
-	// Write private key in OpenSSH PEM format
+	// Write private key in OpenSSH PEM format (encrypted with password)
 	if err := os.WriteFile(privateKeyPath, privateKeyBytes, 0600); err != nil {
 		return nil, fmt.Errorf("failed to write private key: %w", err)
+	}
+
+	// Write password to .pwd file
+	if err := os.WriteFile(passwordPath, []byte(password+"\n"), 0600); err != nil {
+		return nil, fmt.Errorf("failed to write password file: %w", err)
 	}
 
 	// Generate OpenSSH format public key
@@ -165,11 +245,15 @@ func EnsureKeyPair(keyDir string) (*KeyPair, error) {
 	log.Infow("SSH key pair generated successfully",
 		"privateKey", privateKeyPath,
 		"publicKey", publicKeyPath,
+		"passwordFile", passwordPath,
+		"encrypted", true,
 	)
 
 	return &KeyPair{
 		PrivateKeyPath: privateKeyPath,
 		PublicKeyPath:  publicKeyPath,
+		PasswordPath:   passwordPath,
+		Password:       password,
 		PublicKey:      publicKeyStr,
 	}, nil
 }

@@ -415,12 +415,14 @@ func createSSHPool(cfg *config.Config, keyPair *sshkeys.KeyPair) (*ssh.Pool, err
 		}
 
 		if node.UseSSHAutomaticKeyPair && keyPair != nil {
-			// Use automatic key pair
+			// Use automatic key pair with password if available
 			authConfig.PrivateKeyPath = keyPair.PrivateKeyPath
+			authConfig.PrivateKeyPassword = keyPair.Password
 		} else {
 			// Use configured credentials
 			authConfig.Password = node.Password
 			authConfig.PrivateKeyPath = node.PrivateKeyPath
+			// Note: User-provided private keys don't use the auto-generated password
 		}
 
 		authConfigs[node.Hostname] = authConfig

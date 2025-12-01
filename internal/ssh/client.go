@@ -23,11 +23,12 @@ type Client struct {
 
 // AuthConfig contains SSH authentication configuration.
 type AuthConfig struct {
-	Username       string
-	Password       string
-	PrivateKeyPEM  []byte
-	PrivateKeyPath string
-	Port           int // SSH port (default: 22)
+	Username           string
+	Password           string
+	PrivateKeyPEM      []byte
+	PrivateKeyPath     string
+	PrivateKeyPassword string // Password for encrypted private key (optional)
+	Port               int    // SSH port (default: 22)
 }
 
 // NewClient creates a new SSH client connection to the specified host using the provided authentication.
@@ -36,7 +37,15 @@ func NewClient(ctx context.Context, host string, auth AuthConfig) (*Client, erro
 
 	// Try private key authentication first
 	if len(auth.PrivateKeyPEM) > 0 {
-		signer, err := ssh.ParsePrivateKey(auth.PrivateKeyPEM)
+		var signer ssh.Signer
+		var err error
+
+		if auth.PrivateKeyPassword != "" {
+			signer, err = ssh.ParsePrivateKeyWithPassphrase(auth.PrivateKeyPEM, []byte(auth.PrivateKeyPassword))
+		} else {
+			signer, err = ssh.ParsePrivateKey(auth.PrivateKeyPEM)
+		}
+
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse private key: %w", err)
 		}
@@ -46,7 +55,14 @@ func NewClient(ctx context.Context, host string, auth AuthConfig) (*Client, erro
 		if err != nil {
 			return nil, fmt.Errorf("failed to read private key from %s: %w", auth.PrivateKeyPath, err)
 		}
-		signer, err := ssh.ParsePrivateKey(keyData)
+
+		var signer ssh.Signer
+		if auth.PrivateKeyPassword != "" {
+			signer, err = ssh.ParsePrivateKeyWithPassphrase(keyData, []byte(auth.PrivateKeyPassword))
+		} else {
+			signer, err = ssh.ParsePrivateKey(keyData)
+		}
+
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse private key from %s: %w", auth.PrivateKeyPath, err)
 		}
