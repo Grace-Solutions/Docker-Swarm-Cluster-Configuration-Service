@@ -359,10 +359,10 @@ func mountVolume(ctx context.Context, sshPool *ssh.Pool, workers []string, volum
 			return fmt.Errorf("failed to create mount point on %s: %w (stderr: %s)", worker, err, stderr)
 		}
 
-		// Check if already mounted
-		checkCmd := fmt.Sprintf("mount | grep -q '%s' && echo 'mounted' || echo 'not-mounted'", mount)
+		// Check if already mounted as GlusterFS (must be both the mount point AND glusterfs type)
+		checkCmd := fmt.Sprintf("mount | grep '%s' | grep -q glusterfs && echo 'mounted' || echo 'not-mounted'", mount)
 		stdout, _, err := sshPool.Run(ctx, worker, checkCmd)
-		if err == nil && strings.Contains(stdout, "mounted") {
+		if err == nil && strings.Contains(stdout, "mounted") && !strings.Contains(stdout, "not-mounted") {
 			logging.L().Infow(fmt.Sprintf("%s: already mounted", worker))
 			continue
 		}
