@@ -23,7 +23,8 @@ const (
 	// PrivateKeyFileName is the name of the private key file
 	PrivateKeyFileName = "PrivateKey.ppk"
 	// PublicKeyFileName is the name of the public key file
-	PublicKeyFileName = "PublicKey.pub"
+	// Uses .pubkey extension to avoid conflict with MS Publisher (.pub)
+	PublicKeyFileName = "PublicKey.pubkey"
 	// PasswordFileName is the name of the password file
 	PasswordFileName = "PrivateKey.pwd"
 )

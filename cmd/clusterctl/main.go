@@ -15,6 +15,16 @@ import (
 	"clusterctl/internal/logging"
 )
 
+// Version information - set via ldflags during build
+var (
+	// Version is the build version in yyyy-MM-dd-HHmm format
+	Version = "dev"
+	// BuildTime is the build timestamp
+	BuildTime = "unknown"
+	// BinaryName is the name of the binary
+	BinaryName = "dswrmctl"
+)
+
 func main() {
 	if err := logging.Init(); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to initialise logging: %v\n", err)
@@ -25,16 +35,22 @@ func main() {
 	ctx := withSignals(context.Background())
 
 	// Parse flags
-	fs := flag.NewFlagSet("clusterctl", flag.ExitOnError)
-	configPath := fs.String("config", "", "Path to JSON configuration file (default: clusterctl.json in binary directory)")
+	fs := flag.NewFlagSet(BinaryName, flag.ExitOnError)
+	configPath := fs.String("config", "", "Path to JSON configuration file (default: dswrmctl.json in binary directory)")
 	dryRun := fs.Bool("dry-run", false, "Validate configuration without deploying")
 	teardown := fs.Bool("teardown", false, "Teardown/reset the cluster")
 	removeOverlays := fs.Bool("remove-overlays", false, "Remove overlay networks during teardown (may break connectivity)")
 	showHelp := fs.Bool("help", false, "Show help message")
+	showVersion := fs.Bool("version", false, "Show version information")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to parse flags: %v\n", err)
 		os.Exit(1)
+	}
+
+	if *showVersion {
+		fmt.Printf("%s version %s (built %s)\n", BinaryName, Version, BuildTime)
+		return
 	}
 
 	if *showHelp {
@@ -96,22 +112,25 @@ func formatError(err error) string {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `clusterctl - Docker Swarm Cluster Orchestrator
+	fmt.Fprintf(os.Stderr, `%s - Docker Swarm Cluster Orchestrator
+Version: %s (built %s)
 
 Deploy and manage Docker Swarm clusters with distributed storage (MicroCeph) via SSH.
 
 Usage:
-  clusterctl [flags]
+  %s [flags]
 
 Flags:
   -config string
-        Path to JSON configuration file (default: clusterctl.json in binary directory)
+        Path to JSON configuration file (default: dswrmctl.json in binary directory)
   -dry-run
         Validate configuration without deploying
   -teardown
         Teardown/reset the cluster (removes services, swarm, optionally networks and storage)
   -remove-overlays
         Remove overlay networks during teardown (may break connectivity, use with caution)
+  -version
+        Show version information
   -help
         Show this help message
 
@@ -121,20 +140,20 @@ Notes:
 
 Examples:
   # Deploy cluster
-  clusterctl -config cluster.json
+  %s -config cluster.json
 
   # Validate configuration
-  clusterctl -config cluster.json -dry-run
+  %s -config cluster.json -dry-run
 
   # Teardown cluster (honors distributedStorage.forceRecreation setting)
-  clusterctl -config cluster.json -teardown
+  %s -config cluster.json -teardown
 
   # Full teardown (removes overlay networks as well)
-  clusterctl -config cluster.json -teardown -remove-overlays
+  %s -config cluster.json -teardown -remove-overlays
 
-For configuration examples, see clusterctl.json.example
+For configuration examples, see dswrmctl.json.example
 
-`)
+`, BinaryName, Version, BuildTime, BinaryName, BinaryName, BinaryName, BinaryName, BinaryName)
 }
 
 func runDeploy(ctx context.Context, configPath string, dryRun bool) {

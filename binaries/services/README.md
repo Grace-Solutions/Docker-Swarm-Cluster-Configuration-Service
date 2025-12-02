@@ -4,7 +4,7 @@ This directory contains Docker Stack YAML files that will be automatically deplo
 
 ## How It Works
 
-1. **Automatic Discovery**: `clusterctl` scans this directory for `.yml` and `.yaml` files
+1. **Automatic Discovery**: `dswrmctl` scans this directory for `.yml` and `.yaml` files
 2. **Metadata Parsing**: Each file's metadata is read from comment headers
 3. **Selective Deployment**: Only enabled services are deployed
 4. **Progress Tracking**: Detailed logging shows discovery, deployment progress, and metrics
@@ -37,7 +37,7 @@ services:
 1. Create a new `.yml` or `.yaml` file in this directory
 2. Add metadata headers at the top
 3. Define your Docker Stack services
-4. Run `clusterctl -config your-config.json`
+4. Run `dswrmctl -config your-config.json`
 
 The service will be automatically discovered and deployed if enabled.
 
@@ -58,7 +58,7 @@ Or simply remove/rename the file (e.g., add `.disabled` extension).
 `001-PortainerAgent.yml` - Portainer Agent (global service on all nodes)
 `002-Portainer.yml` - Portainer CE (container management UI)
 - Accessible at `https://<any-node-ip>:9443`
-- Uses GlusterFS for persistent storage
+- Uses CephFS for persistent storage
 - Deployed in order (Agent first, then CE)
 
 ## Service Deployment Order
@@ -87,34 +87,34 @@ networks:
 
 ## Storage
 
-For persistent storage, use GlusterFS mount paths. The tool automatically replaces GlusterFS paths with your configured `glusterMount` path from the configuration file.
+For persistent storage, use CephFS mount paths. The tool automatically replaces storage paths with your configured mount path from the configuration file.
 
 **Pattern Matching:**
-The tool uses regex to find and replace common GlusterFS path patterns:
-- `/mnt/GlusterFS/<cluster-name>/data` → Replaced with your `glusterMount`
-- `/mnt/glusterfs/<cluster-name>/data` → Replaced with your `glusterMount`
+The tool uses regex to find and replace common storage path patterns:
+- `/mnt/MicroCephFS/<pool-name>` → Replaced with your configured `mountPath`
+- `/mnt/GlusterFS/<cluster-name>/data` → Replaced with your configured `mountPath` (legacy support)
 
 **Example:**
 ```yaml
 volumes:
-  - /mnt/GlusterFS/docker-swarm-0001/data/YourService:/data
+  - /mnt/MicroCephFS/docker-swarm-0001/YourService:/data
 ```
 
-If your config has `"glusterMount": "/mnt/GlusterFS/my-cluster/data"`, the path will be automatically replaced to:
+If your config has `"mountPath": "/mnt/MicroCephFS/my-cluster"`, the path will be automatically replaced to:
 ```yaml
 volumes:
-  - /mnt/GlusterFS/my-cluster/data/YourService:/data
+  - /mnt/MicroCephFS/my-cluster/YourService:/data
 ```
 
 **Benefits:**
-- ✅ Write service YAMLs once with any GlusterFS path pattern
+- ✅ Write service YAMLs once with any storage path pattern
 - ✅ Paths automatically adapt to your cluster configuration
 - ✅ No manual editing needed when changing mount paths
 - ✅ Services remain portable across different cluster configurations
 
 ## Deployment Logs
 
-During deployment, `clusterctl` logs:
+During deployment, `dswrmctl` logs:
 - Total services found
 - Enabled vs disabled count
 - Processing progress (e.g., "deploying service 2/5")
@@ -132,7 +132,7 @@ During deployment, `clusterctl` logs:
 ## Troubleshooting
 
 If a service fails to deploy:
-1. Check the `clusterctl` logs for error details
+1. Check the `dswrmctl` logs for error details
 2. Verify the YAML syntax is valid
 3. Ensure required networks exist
 4. Check node constraints match your cluster
@@ -150,7 +150,7 @@ You can maintain different service directories for different environments:
 
 ```bash
 # Production
-clusterctl -config prod.json  # Uses binaries/services/
+dswrmctl -config prod.json  # Uses binaries/services/
 
 # Staging (copy services to different location)
 # Modify config to point to different services directory

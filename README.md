@@ -1,12 +1,12 @@
 # Docker Swarm Cluster Configuration Service
 
-`clusterctl` is a Go-based orchestrator that automates Docker Swarm cluster deployment, management, and teardown with GlusterFS storage integration via SSH.
+`dswrmctl` (Docker Swarm Control) is a Go-based orchestrator that automates Docker Swarm cluster deployment, management, and teardown with MicroCeph distributed storage integration via SSH.
 
 ## Features
 
 - ✅ **Automated Deployment** - Deploy complete Docker Swarm clusters from JSON configuration
 - ✅ **SSH-Based Orchestration** - Server-initiated connections, no agents required
-- ✅ **GlusterFS Integration** - Replicated storage with automatic setup
+- ✅ **MicroCeph Integration** - Distributed storage with CephFS and optional S3 (RADOS Gateway)
 - ✅ **Overlay Networking** - Support for Netbird, Tailscale, and WireGuard
 - ✅ **Service Deployment** - Generic YAML-based service deployment system
 - ✅ **Teardown/Reset** - Clean cluster removal with optional data preservation
@@ -24,8 +24,8 @@ graph TB
     Hostname --> PreScript[Phase 3: Pre-Scripts]
     PreScript --> Deps[Phase 4: Install Dependencies]
     Deps --> Overlay[Phase 5: Overlay Network]
-    Overlay --> Gluster[Phase 6: GlusterFS Setup]
-    Gluster --> Swarm[Phase 7: Docker Swarm]
+    Overlay --> Storage[Phase 6: MicroCeph Setup]
+    Storage --> Swarm[Phase 7: Docker Swarm]
     Swarm --> Labels[Phase 8: Geolocation & Labels]
     Labels --> Services[Phase 9: Deploy Services]
     Services --> PostScript[Phase 10: Post-Scripts]
@@ -35,15 +35,10 @@ graph TB
     Deploy -->|Teardown| SSH2[Phase 1: SSH Setup]
     SSH2 --> RemoveStacks[Phase 2: Remove Stacks]
     RemoveStacks --> LeaveSwarm[Phase 3: Leave Swarm]
-    LeaveSwarm --> UnmountGluster[Phase 4: Unmount GlusterFS]
-    UnmountGluster --> DeleteVolume[Phase 5: Delete Volume]
-    DeleteVolume --> DataDecision{Remove Data?}
-    DataDecision -->|Yes| RemoveData[Phase 6: Remove Data]
-    DataDecision -->|No| SkipData[Phase 6: Skip Data]
-    RemoveData --> NetworkDecision{Remove Networks?}
-    SkipData --> NetworkDecision
-    NetworkDecision -->|Yes| RemoveNetworks[Phase 7: Remove Networks]
-    NetworkDecision -->|No| SkipNetworks[Phase 7: Skip Networks]
+    LeaveSwarm --> TeardownStorage[Phase 4: Teardown MicroCeph]
+    TeardownStorage --> NetworkDecision{Remove Networks?}
+    NetworkDecision -->|Yes| RemoveNetworks[Phase 5: Remove Networks]
+    NetworkDecision -->|No| SkipNetworks[Phase 5: Skip Networks]
     RemoveNetworks --> Complete2([✅ Teardown Complete])
     SkipNetworks --> Complete2
 
@@ -60,36 +55,36 @@ graph TB
 ### Deploy a Cluster
 
 ```bash
-# 1. Create a configuration file (see binaries/clusterctl.json.example)
-cp binaries/clusterctl.json.example clusterctl.json
+# 1. Create a configuration file (see binaries/dswrmctl.json.example)
+cp binaries/dswrmctl.json.example dswrmctl.json
 
 # 2. Edit the configuration with your nodes and credentials
-nano clusterctl.json
+nano dswrmctl.json
 
 # 3. Deploy the cluster
-./binaries/clusterctl-linux-amd64 -config clusterctl.json
+./binaries/dswrmctl-linux-amd64 -config dswrmctl.json
 ```
 
 ### Teardown a Cluster
 
 ```bash
 # Teardown cluster (keeps networks and data for connectivity)
-./binaries/clusterctl-linux-amd64 -config clusterctl.json -teardown
+./binaries/dswrmctl-linux-amd64 -config dswrmctl.json -teardown
 
 # Full teardown (removes everything including data - WARNING: destructive)
-./binaries/clusterctl-linux-amd64 -config clusterctl.json -teardown -remove-overlays -remove-gluster-data
+./binaries/dswrmctl-linux-amd64 -config dswrmctl.json -teardown -remove-overlays
 ```
 
 ### Deployment Phases
 
-When you run `clusterctl -config clusterctl.json`, the following phases execute:
+When you run `dswrmctl -config dswrmctl.json`, the following phases execute:
 
 1. **Phase 1**: SSH Connection Pool - Establish SSH connections to all nodes
 2. **Phase 2**: Set Hostnames - Idempotently set new hostnames (if configured)
 3. **Phase 3**: Pre-Deployment Scripts - Execute custom scripts before setup
-4. **Phase 4**: Install Dependencies - Install Docker, overlay provider, GlusterFS
+4. **Phase 4**: Install Dependencies - Install Docker, overlay provider, MicroCeph
 5. **Phase 5**: Configure Overlay Network - Setup VPN mesh (Netbird/Tailscale/WireGuard)
-6. **Phase 6**: Setup GlusterFS - Create trusted storage pool, volume, and mounts
+6. **Phase 6**: Setup MicroCeph - Create distributed storage cluster with CephFS
 7. **Phase 7**: Setup Docker Swarm - Initialize swarm and join nodes
 8. **Phase 8**: Detect Geolocation & Apply Labels - Auto-detect region and apply all labels
 9. **Phase 9**: Deploy Services - Deploy services from `binaries/services/` folder
@@ -99,15 +94,13 @@ When you run `clusterctl -config clusterctl.json`, the following phases execute:
 
 ### Teardown Phases
 
-When you run `clusterctl -config clusterctl.json -teardown`, the following phases execute:
+When you run `dswrmctl -config dswrmctl.json -teardown`, the following phases execute:
 
 1. **Phase 1**: SSH Connection Pool - Establish SSH connections to all nodes
 2. **Phase 2**: Remove Stacks - Remove all deployed Docker stacks
 3. **Phase 3**: Leave Swarm - All nodes leave the Docker Swarm
-4. **Phase 4**: Unmount GlusterFS - Unmount GlusterFS volumes on managers
-5. **Phase 5**: Delete Volume - Stop and delete GlusterFS volume
-6. **Phase 6**: Remove Data (Optional) - Remove GlusterFS data directories (`-remove-gluster-data`)
-7. **Phase 7**: Remove Networks (Optional) - Remove overlay networks (`-remove-overlays`)
+4. **Phase 4**: Teardown MicroCeph - Unmount CephFS and optionally remove storage
+5. **Phase 5**: Remove Networks (Optional) - Remove overlay networks (`-remove-overlays`)
 
 **Key Features:**
 - ✅ **Parallel execution** - All nodes configured simultaneously for speed
@@ -118,7 +111,7 @@ When you run `clusterctl -config clusterctl.json -teardown`, the following phase
 
 ### Configuration File Format
 
-See `binaries/clusterctl.json.example` for a complete example. The configuration has two main sections:
+See `binaries/dswrmctl.json.example` for a complete example. The configuration has two main sections:
 
 #### Global Settings
 
@@ -128,27 +121,23 @@ See `binaries/clusterctl.json.example` for a complete example. The configuration
     "clusterName": "production-swarm",
     "overlayProvider": "netbird",
     "overlayConfig": "your-netbird-setup-key-here",
-    "glusterVolume": "docker-swarm-0001",
-    "glusterMount": "/mnt/GlusterFS/Docker/Swarm/0001/data",
-    "glusterBrick": "/mnt/GlusterFS/Docker/Swarm/0001/brick",
     "servicesDir": "",
     "removeSSHPublicKeyOnCompletion": false,
-    "preScripts": [
-      {
-        "enabled": true,
-        "name": "pre-deployment-check",
-        "source": "https://example.com/scripts/pre-check.sh",
-        "parameters": "--verbose"
+    "distributedStorage": {
+      "enabled": true,
+      "provider": "microceph",
+      "poolName": "docker-swarm-0001",
+      "providers": {
+        "microceph": {
+          "snapChannel": "squid/stable",
+          "mountPath": "/mnt/MicroCephFS/docker-swarm-0001",
+          "allowLoopDevices": true,
+          "loopDeviceSizeGB": 16
+        }
       }
-    ],
-    "postScripts": [
-      {
-        "enabled": true,
-        "name": "post-deployment-validation",
-        "source": "https://example.com/scripts/post-validate.sh",
-        "parameters": ""
-      }
-    ]
+    },
+    "preScripts": [],
+    "postScripts": []
   }
 }
 ```
@@ -160,15 +149,13 @@ See `binaries/clusterctl.json.example` for a complete example. The configuration
   - **Netbird**: Setup key (e.g., `NB_SETUP_KEY`)
   - **Tailscale**: Auth key (e.g., `TS_AUTHKEY`)
   - **WireGuard**: Interface name or config path (e.g., `wg0` or `/etc/wireguard/wg0.conf`)
-- `glusterVolume`: GlusterFS volume name (default: `docker-swarm-0001`)
-- `glusterMount`: Default mount path for GlusterFS (default: `/mnt/GlusterFS/Docker/Swarm/0001/data`)
-- `glusterBrick`: Default brick path for GlusterFS (default: `/mnt/GlusterFS/Docker/Swarm/0001/brick`)
 - `servicesDir`: Directory containing service YAML files (default: `services` relative to binary)
 - `removeSSHPublicKeyOnCompletion`: Remove SSH public key from nodes on deployment completion (default: `false`)
   - **Note**: Only affects nodes using `useSSHAutomaticKeyPair=true`
   - When `false` (default): SSH public key remains installed on nodes for future deployments
   - When `true`: SSH public key is removed from nodes' `~/.ssh/authorized_keys` after deployment completes
   - **Important**: Local private key is always kept in timestamped folders for future use
+- `distributedStorage`: MicroCeph distributed storage configuration (see example config for full options)
 - `preScripts`: Array of scripts to execute **before** deployment on all nodes
 - `postScripts`: Array of scripts to execute **after** deployment on all nodes
 
@@ -197,9 +184,7 @@ Each node supports extensive per-node configuration with overrides:
       "sshPort": 22,
       "role": "manager",
       "rebootOnCompletion": false,
-      "glusterEnabled": false,
-      "glusterMount": "",
-      "glusterBrick": "",
+      "storageEnabled": true,
       "advertiseAddr": "",
       "scriptsEnabled": true,
       "labels": {
@@ -216,7 +201,7 @@ Each node supports extensive per-node configuration with overrides:
       "sshPort": 2222,
       "role": "worker",
       "rebootOnCompletion": true,
-      "glusterEnabled": true,
+      "storageEnabled": true,
       "scriptsEnabled": true,
       "labels": {
         "environment": "production",
@@ -259,10 +244,8 @@ Each node supports extensive per-node configuration with overrides:
 - `scriptsEnabled`: Enable script execution on this node (default: `true`)
   - If `false`, pre/post scripts are skipped for this node
 
-**GlusterFS Settings (per-node overrides):**
-- `glusterEnabled`: Enable GlusterFS on this node (workers only)
-- `glusterMount`: Override global mount path for this node (optional)
-- `glusterBrick`: Override global brick path for this node (optional)
+**Storage Settings:**
+- `storageEnabled`: Enable distributed storage (MicroCeph) on this node (default: `false`)
 
 **Docker Swarm Settings:**
 - `advertiseAddr`: Override auto-detected advertise address for Swarm (optional)
@@ -289,9 +272,9 @@ The deployer automatically applies comprehensive labels to each Docker Swarm nod
 
 **Infrastructure Labels** (from configuration):
 - `overlay.provider`: Overlay network provider (e.g., "netbird", "tailscale")
-- `glusterfs.enabled`: "true" or "false"
-- `glusterfs.mount-path`: GlusterFS mount path (if enabled)
-- `glusterfs.brick-path`: GlusterFS brick path (if enabled)
+- `storage.enabled`: "true" or "false"
+- `storage.provider`: Storage provider (e.g., "microceph")
+- `storage.mount-path`: CephFS mount path (if enabled)
 - `cluster.name`: Cluster name from global settings
 - `node.role`: "manager" or "worker"
 
@@ -311,9 +294,9 @@ docker service create --constraint 'node.labels.storage==ssd' postgres
 # Deploy to production environment only
 docker service create --constraint 'node.labels.environment==production' myapp
 
-# Deploy to GlusterFS-enabled nodes
-docker service create --constraint 'node.labels.glusterfs.enabled==true' \
-  --mount type=bind,src=/mnt/GlusterFS/Docker/Swarm/0001/data,dst=/data myapp
+# Deploy to storage-enabled nodes with CephFS mount
+docker service create --constraint 'node.labels.storage.enabled==true' \
+  --mount type=bind,src=/mnt/MicroCephFS/docker-swarm-0001,dst=/data myapp
 ```
 
 ### SSH Multi-Session Support
@@ -321,7 +304,7 @@ docker service create --constraint 'node.labels.glusterfs.enabled==true' \
 The deployer uses **parallel SSH sessions** for maximum performance:
 - All nodes are configured **simultaneously** using goroutines
 - Each node gets its own SSH connection from the pool
-- Operations like dependency installation, overlay setup, and GlusterFS configuration run in parallel
+- Operations like dependency installation, overlay setup, and storage configuration run in parallel
 - This dramatically reduces deployment time for large clusters
 
 The SSH pool (`internal/ssh/pool.go`) manages connections efficiently:
@@ -333,109 +316,29 @@ The SSH pool (`internal/ssh/pool.go`) manages connections efficiently:
 ## Features
 
 - **Swarm master orchestration**
-  - Initialise a Swarm manager and optional GlusterFS state paths.
+  - Initialise a Swarm manager with distributed storage.
   - Run a controller server that coordinates nodes via JSON-over-TCP.
 - **Node convergence**
   - Nodes register with the controller and are converged onto the desired
-    state (Swarm role, overlay provider, GlusterFS participation).
+    state (Swarm role, overlay provider, storage participation).
 - **Overlay providers**
   - Netbird (`netbird`)
   - Tailscale (`tailscale`)
   - WireGuard (`wireguard`)
   - Or no overlay (`none`)
-- **GlusterFS support**
-  - Optional brick preparation, volume creation, and mounts.
+- **MicroCeph distributed storage**
+  - CephFS for POSIX-compliant shared storage
+  - Optional RADOS Gateway (S3) support
 - **Auto-installation of dependencies**
   - Docker and Docker Compose (`docker` CLI plugin and/or `docker-compose`).
   - Netbird, Tailscale, WireGuard tools.
-  - GlusterFS client utilities.
+  - MicroCeph snap package.
 
 ## Legacy Mode: Node-Agent Deployment
 
 **Note:** This mode is deprecated. Use the `deploy` command with JSON config instead.
 
-On a fresh Linux host that can reach your Netbird/Tailscale/WireGuard network,
-you can get to the binaries and start the primary master controller with
-GlusterFS state/brick/mount paths wired up by default:
-
-```bash
-git clone https://github.com/Grace-Solutions/Docker-Swarm-Cluster-Configuration-Service.git && \
-  cd ./Docker-Swarm-Cluster-Configuration-Service && \
-  chmod -R -v +x ./ && \
-  cd ./binaries && \
-  clear && \
-  ./cluster-master-init.sh \
-    --primary-master \
-    --enable-glusterfs \
-    --listen 0.0.0.0:7000 \
-    --min-managers 3 \
-    --min-workers 6 \
-    --wait-for-minimum
-```
-
-One-line version:
-
-```bash
-git clone https://github.com/Grace-Solutions/Docker-Swarm-Cluster-Configuration-Service.git && cd ./Docker-Swarm-Cluster-Configuration-Service && chmod -R -v +x ./ && cd ./binaries && clear && ./cluster-master-init.sh --primary-master --enable-glusterfs --listen 0.0.0.0:7000 --min-managers 3 --min-workers 6 --wait-for-minimum
-```
-
-With `--enable-glusterfs` and the default `--state-dir`:
-
-- **State dir (controller + data mount):** `/mnt/GlusterFS/Docker/Swarm/0001/data`
-- **Brick dir (where Gluster bricks live on worker nodes):** `/mnt/GlusterFS/Docker/Swarm/0001/brick`
-- **Volume name:** `0001` (derived from the parent directory name)
-
-The advertise address is automatically detected using IP priority: overlay (CGNAT) > private (RFC1918) > other non-loopback > loopback.
-
-### Quickstart: additional manager node (Linux)
-
-On another Linux host that should participate as a Swarm **manager**:
-
-```bash
-git clone https://github.com/Grace-Solutions/Docker-Swarm-Cluster-Configuration-Service.git && \
-  cd ./Docker-Swarm-Cluster-Configuration-Service && \
-  chmod -R -v +x ./ && \
-  cd ./binaries && \
-  clear && \
-  ./cluster-node-join.sh \
-    --master <PRIMARY_MANAGER_IP>:7000 \
-    --role manager \
-    --overlay-provider netbird \
-    --overlay-config <NETBIRD_SETUP_KEY>
-```
-
-One-line version:
-
-```bash
-git clone https://github.com/Grace-Solutions/Docker-Swarm-Cluster-Configuration-Service.git && cd ./Docker-Swarm-Cluster-Configuration-Service && chmod -R -v +x ./ && cd ./binaries && clear && ./cluster-node-join.sh --master <PRIMARY_MANAGER_IP>:7000 --role manager --overlay-provider netbird --overlay-config <NETBIRD_SETUP_KEY>
-```
-
-### Quickstart: worker node (Linux)
-
-On a Linux host that should run Swarm **worker** tasks:
-
-```bash
-git clone https://github.com/Grace-Solutions/Docker-Swarm-Cluster-Configuration-Service.git && \
-  cd ./Docker-Swarm-Cluster-Configuration-Service && \
-  chmod -R -v +x ./ && \
-  cd ./binaries && \
-  clear && \
-  ./cluster-node-join.sh \
-    --master <PRIMARY_MANAGER_IP>:7000 \
-    --role worker \
-    --overlay-provider netbird \
-    --overlay-config <NETBIRD_SETUP_KEY> \
-    --enable-glusterfs
-```
-
-One-line version:
-
-```bash
-git clone https://github.com/Grace-Solutions/Docker-Swarm-Cluster-Configuration-Service.git && cd ./Docker-Swarm-Cluster-Configuration-Service && chmod -R -v +x ./ && cd ./binaries && clear && ./cluster-node-join.sh --master <PRIMARY_MANAGER_IP>:7000 --role worker --overlay-provider netbird --overlay-config <NETBIRD_SETUP_KEY> --enable-glusterfs
-```
-
-Replace `<NETBIRD_SETUP_KEY>` with your Netbird setup key (or switch
-`--overlay-provider` / `--overlay-config` to match your chosen overlay).
+The legacy mode used wrapper scripts (`cluster-master-init.sh`, `cluster-node-join.sh`) for node-agent style deployment. These scripts are still available but the recommended approach is to use the JSON configuration file with the `dswrmctl` binary directly.
 
 **Note**: Services are deployed via the generic service deployment system from YAML files in the `binaries/services/` directory.
 
@@ -443,54 +346,65 @@ Replace `<NETBIRD_SETUP_KEY>` with your Netbird setup key (or switch
 
 The main entry points are:
 
-- `clusterctl master init [flags]`
-- `clusterctl master serve [flags]`
-- `clusterctl master reset [flags]`
-- `clusterctl node join [flags]`
-- `clusterctl node reset [flags]`
+- `dswrmctl -config <config.json>` - Deploy cluster from JSON configuration
+- `dswrmctl -config <config.json> -teardown` - Teardown cluster
+- `dswrmctl -version` - Show version information
 
-Run `clusterctl help` or any command with `-h`/`--help` for detailed flags.
+Run `dswrmctl -help` for detailed flags.
 
 ## Linux wrapper scripts
 
 For convenience, Linux wrapper scripts live under `./binaries` and execute
-pre-built `clusterctl` binaries relative to the script directory:
+pre-built `dswrmctl` binaries relative to the script directory:
 
-- `cluster-master-init.sh` wraps `clusterctl master init`.
-- `cluster-master-serve.sh` wraps `clusterctl master serve` (listen/server
-  mode).
-- `cluster-node-join.sh` wraps `clusterctl node join` (node/client mode).
+- `cluster-master-init.sh` wraps `dswrmctl master init`.
+- `cluster-master-serve.sh` wraps `dswrmctl master serve` (listen/server mode).
+- `cluster-node-join.sh` wraps `dswrmctl node join` (node/client mode).
 
 Each script:
 
 - Detects the architecture via `uname -m`.
-- Selects `clusterctl-linux-amd64` or `clusterctl-linux-arm64` from the
+- Selects `dswrmctl-linux-amd64` or `dswrmctl-linux-arm64` from the
   `binaries/` directory.
-- Passes through all additional arguments to the underlying `clusterctl`
+- Passes through all additional arguments to the underlying `dswrmctl`
   subcommand.
 
 See `binaries/README.md` for examples and usage notes.
 
 ## Building
 
-From the repository root:
+Use the PowerShell build script for cross-platform compilation:
+
+```powershell
+.\scripts\build.ps1
+```
+
+This builds all targets (Linux amd64/arm64, macOS amd64/arm64, Windows amd64) with embedded version information.
+
+Or build manually from the repository root:
 
 - Linux/amd64:
 
   ```bash
-  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o binaries/clusterctl-linux-amd64 ./cmd/clusterctl
+  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o binaries/dswrmctl-linux-amd64 ./cmd/clusterctl
   ```
 
 - Linux/arm64:
 
   ```bash
-  GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o binaries/clusterctl-linux-arm64 ./cmd/clusterctl
+  GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o binaries/dswrmctl-linux-arm64 ./cmd/clusterctl
+  ```
+
+- macOS/arm64 (Apple Silicon):
+
+  ```bash
+  GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o binaries/dswrmctl-darwin-arm64 ./cmd/clusterctl
   ```
 
 - Windows/amd64:
 
   ```bash
-  GOOS=windows GOARCH=amd64 go build -o binaries/clusterctl-windows-amd64.exe ./cmd/clusterctl
+  GOOS=windows GOARCH=amd64 go build -o binaries/dswrmctl-windows-amd64.exe ./cmd/clusterctl
   ```
 
 Pre-built binaries for these targets are tracked under `./binaries`.
@@ -499,33 +413,31 @@ Pre-built binaries for these targets are tracked under `./binaries`.
 
 - `GO-IMPLEMENTATION-SPEC.md` – the original design and behavioural spec.
 - `docs/README.md` – higher-level architecture and CLI overview.
-- `binaries/README.md` – documentation for the Linux wrapper scripts and
-  binaries.
+- `binaries/README.md` – documentation for the Linux wrapper scripts and binaries.
 
 ## Logging
 
-`clusterctl` writes plain-text log lines in the format:
+`dswrmctl` writes plain-text log lines in the format:
 
 ```text
 [2025-01-01T12:00:00Z] - [INFO] - message
 ```
 
-- Logs are emitted to **stderr** and to a log file named `clusterctl.log` in the
+- Logs are emitted to **stderr** and to a log file named `dswrmctl.log` in the
   current working directory by default.
-- Override the log file path via `CLUSTERCTL_LOG_FILE`.
-- Control the minimum log level via `CLUSTERCTL_LOG_LEVEL`
+- Override the log file path via `DSWRMCTL_LOG_FILE`.
+- Control the minimum log level via `DSWRMCTL_LOG_LEVEL`
   (e.g. `debug`, `info`, `warn`, `error`; default is `info`).
 
-Controller and node logs include detailed Swarm and GlusterFS events after each
+Controller and node logs include detailed Swarm and storage events after each
 join so you can see which token was used, which Swarm cluster the node joined,
-and the current GlusterFS volume/mount status on that node.
+and the current storage status on that node.
 
 ## Notes
 
-- The Go implementation is idempotent: commands like `node join` and
-  `master init` are safe to re-run and converge the system onto the desired
-  state.
-- Overlay provider config is passed as a **string** via `--overlay-config` and
+- The Go implementation is idempotent: commands are safe to re-run and converge
+  the system onto the desired state.
+- Overlay provider config is passed as a **string** via `overlayConfig` and
   mapped to provider-specific environment variables (e.g. `NB_SETUP_KEY` for
   Netbird, `TS_AUTHKEY` for Tailscale).
 - Dependency installers (`internal/deps`) make a best-effort to support

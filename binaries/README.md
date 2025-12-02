@@ -1,96 +1,108 @@
 # Binaries
 
-This directory contains pre-built `clusterctl` binaries for Linux (amd64 and arm64) and Windows (amd64).
+This directory contains pre-built `dswrmctl` (Docker Swarm Control) binaries for Linux, macOS, and Windows.
 
 ## Available Binaries
 
-- **`clusterctl-linux-amd64`**: Linux binary for x86_64 / amd64 systems
-- **`clusterctl-linux-arm64`**: Linux binary for aarch64 / arm64 systems  
-- **`clusterctl-windows-amd64.exe`**: Windows binary for x86_64 / amd64 systems
+- **`dswrmctl-linux-amd64`**: Linux binary for x86_64 / amd64 systems
+- **`dswrmctl-linux-arm64`**: Linux binary for aarch64 / arm64 systems
+- **`dswrmctl-darwin-amd64`**: macOS binary for Intel systems
+- **`dswrmctl-darwin-arm64`**: macOS binary for Apple Silicon (M1/M2/M3)
+- **`dswrmctl-windows-amd64.exe`**: Windows binary for x86_64 / amd64 systems
 
 All binaries are:
 - ✅ **Statically linked** (CGO_ENABLED=0) - no external dependencies
 - ✅ **Self-contained** - no runtime requirements beyond OS kernel
 - ✅ **Cross-platform** - run from any machine with SSH access to target nodes
+- ✅ **Version embedded** - run with `-version` to see build info
 
 ## Usage
 
-### Linux
+### Linux / macOS
 
 ``bash
 # Deploy cluster from configuration file
-./clusterctl-linux-amd64 -config clusterctl.json
+./dswrmctl-linux-amd64 -config dswrmctl.json
 
 # Validate configuration without deploying
-./clusterctl-linux-amd64 -config clusterctl.json -dry-run
+./dswrmctl-linux-amd64 -config dswrmctl.json -dry-run
+
+# Show version
+./dswrmctl-linux-amd64 -version
 
 # Show help
-./clusterctl-linux-amd64 -help
+./dswrmctl-linux-amd64 -help
 ``
 
 ### Windows
 
 ``powershell
 # Deploy cluster from configuration file
-.\clusterctl-windows-amd64.exe -config clusterctl.json
+.\dswrmctl-windows-amd64.exe -config dswrmctl.json
 
 # Validate configuration without deploying
-.\clusterctl-windows-amd64.exe -config clusterctl.json -dry-run
+.\dswrmctl-windows-amd64.exe -config dswrmctl.json -dry-run
+
+# Show version
+.\dswrmctl-windows-amd64.exe -version
 
 # Show help
-.\clusterctl-windows-amd64.exe -help
+.\dswrmctl-windows-amd64.exe -help
 ``
 
 ## Configuration
 
-Create a JSON configuration file (see `clusterctl.json.example` in this directory) that defines:
+Create a JSON configuration file (see `dswrmctl.json.example` in this directory) that defines:
 
-- **Global settings**: Cluster name, overlay provider, GlusterFS paths, scripts
+- **Global settings**: Cluster name, overlay provider, distributed storage, scripts
 - **Node definitions**: SSH connection details, roles (manager/worker), hostnames, labels
 - **Scripts**: Pre/post deployment scripts with conditional execution (optional)
 
 The tool will:
 1. SSH into each node
-2. Install dependencies (Docker, overlay provider, GlusterFS)
+2. Install dependencies (Docker, overlay provider, MicroCeph)
 3. Configure Docker Swarm with managers and workers
-4. Set up GlusterFS distributed storage (if enabled)
+4. Set up MicroCeph distributed storage with CephFS (if enabled)
 5. Execute pre/post deployment scripts (if configured)
 6. Apply custom labels for service placement
 
-### GlusterFS Disk Management
+### MicroCeph Disk Management
 
-The `glusterDiskManagement` parameter controls how GlusterFS bricks are created:
+MicroCeph uses disk selection with regex-based inclusion/exclusion patterns:
 
-- **`false` (default)**: Uses OS disk folders (e.g., `/mnt/gluster-brick1`)
-  - ✅ Simple setup - no additional disks required
-  - ✅ Works on any system
-  - ⚠️ Not recommended for production (performance, capacity)
-  - ✅ Perfect for testing, development, home labs
-
-- **`true`**: Automatically detects, formats, and mounts dedicated disks
-  - ✅ Production-ready - dedicated storage for GlusterFS
-  - ✅ Formats disks with XFS (inode size 512 as recommended)
-  - ✅ Adds to /etc/fstab for persistence
-  - ✅ Automatically excludes nodes without available disks
-  - ⚠️ Requires at least one non-OS disk on worker nodes
-  - ℹ️ Workers without available disks are excluded from GlusterFS cluster
-
-**Example:**
+**Configuration:**
 ```json
 {
   "globalSettings": {
-    "glusterBrick": "/mnt/gluster-brick1",
-    "glusterDiskManagement": true
+    "distributedStorage": {
+      "enabled": true,
+      "provider": "microceph",
+      "providers": {
+        "microceph": {
+          "eligibleDisks": {
+            "inclusionExpression": ["^/dev/sd[b-z]$", "^/dev/nvme[0-9]n1$"],
+            "exclusionExpression": ["^/dev/sda$", "^/dev/vda$"]
+          },
+          "allowLoopDevices": true,
+          "loopDeviceSizeGB": 16
+        }
+      }
+    }
   }
 }
 ```
 
-When `glusterDiskManagement: true`:
-- Tool detects available non-OS disks on each worker
-- Formats first available disk with XFS
-- Mounts at `glusterBrick` path
-- Adds to /etc/fstab for automatic mounting on reboot
-- Workers without disks are automatically excluded (no errors)
+**Disk Selection Logic:**
+1. All disks → Apply Inclusion Filter (OR) → Included Disks
+2. Included Disks → Apply Exclusion Filter (OR) → Eligible Disks
+
+- **Inclusion (OR)**: Disk passes if it matches ANY inclusion pattern
+- **Exclusion (OR)**: Disk dropped if it matches ANY exclusion pattern
+
+**Loop Devices:**
+- When `allowLoopDevices: true` and no physical disks are available
+- Creates a loop device of `loopDeviceSizeGB` size
+- Useful for testing and development environments
 
 ### Script Conditional Execution
 
@@ -109,15 +121,13 @@ Pre and post deployment scripts support conditional execution based on node prop
 - `hostname` - Node hostname
 - `username` - SSH username
 - `newHostname` - New hostname to set
-- `glusterEnabled` - GlusterFS enabled (true/false)
+- `storageEnabled` - Distributed storage enabled (true/false)
 - `rebootOnCompletion` - Reboot on completion (true/false)
 - `scriptsEnabled` - Scripts enabled (true/false)
 - `useSSHAutomaticKeyPair` - Use automatic key pair (true/false)
 - `enabled` - Node enabled (true/false)
 - `sshPort` - SSH port number
 - `advertiseAddr` - Advertise address
-- `glusterMount` - GlusterFS mount path
-- `glusterBrick` - GlusterFS brick path
 - `label.<key>` - Custom label value (e.g., `label.environment`)
 
 **Supported Operators:**
@@ -226,7 +236,7 @@ The `setRootPassword` parameter allows you to set a consistent root password acr
 
 **Security recommendations:**
 - Use strong, unique passwords
-- Protect config file: `chmod 600 clusterctl.json`
+- Protect config file: `chmod 600 dswrmctl.json`
 - Consider using SSH keys instead of passwords for authentication
 - Rotate passwords regularly
 - Use a password manager or secrets management system
@@ -257,7 +267,7 @@ The tool automatically generates and manages ED25519 SSH keys for passwordless a
 
 **Root Access Required:**
 - All nodes must have root privileges (either direct `root` user or passwordless `sudo`)
-- Commands like `hostnamectl`, `chpasswd`, Docker, and GlusterFS require root access
+- Commands like `hostnamectl`, `chpasswd`, Docker, and MicroCeph require root access
 - If using non-root user (e.g., `ubuntu`), ensure passwordless sudo is configured
 
 **SSH Key User Mapping:**
@@ -269,17 +279,17 @@ The tool automatically generates and manages ED25519 SSH keys for passwordless a
 
 **Basic deployment:**
 ``bash
-./clusterctl-linux-amd64 -config production.json
+./dswrmctl-linux-amd64 -config production.json
 ``
 
 **Test configuration:**
 ``bash
-./clusterctl-linux-amd64 -config staging.json -dry-run
+./dswrmctl-linux-amd64 -config staging.json -dry-run
 ``
 
 **Deploy from Windows to Linux nodes:**
 ``powershell
-.\clusterctl-windows-amd64.exe -config cluster.json
+.\dswrmctl-windows-amd64.exe -config cluster.json
 ``
 
 ## Repository Clone Command
