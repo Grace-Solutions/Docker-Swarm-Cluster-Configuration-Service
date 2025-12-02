@@ -16,6 +16,7 @@ import (
 	"clusterctl/internal/services"
 	"clusterctl/internal/ssh"
 	"clusterctl/internal/sshkeys"
+	"clusterctl/internal/storage"
 	"clusterctl/internal/swarm"
 )
 
@@ -1690,7 +1691,7 @@ func getStorageHostnames(ctx context.Context, sshPool *ssh.Pool, cfg *config.Con
 	return overlayHostnames, nil
 }
 
-// setupDistributedStorage sets up the distributed storage cluster (MicroCeph).
+// setupDistributedStorage sets up the distributed storage cluster using the provider framework.
 func setupDistributedStorage(ctx context.Context, sshPool *ssh.Pool, nodes []string, addresses []string, cfg *config.Config) error {
 	ds := cfg.GetDistributedStorage()
 	log := logging.L().With("component", "storage-setup", "type", ds.Type)
@@ -1699,20 +1700,27 @@ func setupDistributedStorage(ctx context.Context, sshPool *ssh.Pool, nodes []str
 		return nil
 	}
 
+	// Create the storage provider
+	provider, err := storage.NewProvider(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to create storage provider: %w", err)
+	}
+
 	log.Infow("setting up distributed storage cluster",
+		"provider", provider.Name(),
 		"nodes", len(nodes),
-		"type", ds.Type,
 		"poolName", ds.PoolName,
 		"mountPath", ds.MountPath)
 
-	// TODO: Implement MicroCeph cluster setup
-	// This will be implemented in a separate orchestrator package
-	log.Warnw("⚠️ MicroCeph setup not yet implemented - storage cluster will need manual configuration")
+	// Use the storage framework to set up the cluster
+	if err := storage.SetupCluster(ctx, sshPool, provider, nodes, addresses, cfg); err != nil {
+		return fmt.Errorf("storage cluster setup failed: %w", err)
+	}
 
 	return nil
 }
 
-// teardownDistributedStorage tears down an existing distributed storage cluster.
+// teardownDistributedStorage tears down an existing distributed storage cluster using the provider framework.
 func teardownDistributedStorage(ctx context.Context, sshPool *ssh.Pool, nodes []string, cfg *config.Config) error {
 	ds := cfg.GetDistributedStorage()
 	log := logging.L().With("component", "storage-teardown", "type", ds.Type)
@@ -1721,16 +1729,55 @@ func teardownDistributedStorage(ctx context.Context, sshPool *ssh.Pool, nodes []
 		return nil
 	}
 
-	log.Infow("tearing down distributed storage cluster", "nodes", len(nodes), "type", ds.Type)
+	// Create the storage provider
+	provider, err := storage.NewProvider(cfg)
+	if err != nil {
+		// If we can't create a provider, fall back to basic cleanup
+		log.Warnw("failed to create storage provider, using basic cleanup", "error", err)
+		return basicStorageTeardown(ctx, sshPool, nodes, cfg)
+	}
 
+	log.Infow("tearing down distributed storage cluster",
+		"provider", provider.Name(),
+		"nodes", len(nodes))
+
+	var lastErr error
 	for _, node := range nodes {
 		log.Infow("→ cleaning up storage on node", "node", node)
 
 		// Unmount storage
 		if ds.MountPath != "" {
+			if err := provider.Unmount(ctx, sshPool, node, ds.MountPath); err != nil {
+				log.Warnw("failed to unmount storage", "node", node, "error", err)
+				lastErr = err
+			}
+		}
+
+		// Teardown the provider
+		if err := provider.Teardown(ctx, sshPool, node); err != nil {
+			log.Warnw("failed to teardown storage", "node", node, "error", err)
+			lastErr = err
+		}
+
+		log.Infow("✓ node cleanup complete", "node", node)
+	}
+
+	log.Infow("✓ distributed storage teardown complete")
+	return lastErr
+}
+
+// basicStorageTeardown performs basic storage cleanup when provider is unavailable.
+func basicStorageTeardown(ctx context.Context, sshPool *ssh.Pool, nodes []string, cfg *config.Config) error {
+	ds := cfg.GetDistributedStorage()
+	log := logging.L().With("component", "storage-teardown-basic")
+
+	for _, node := range nodes {
+		log.Infow("→ basic cleanup on node", "node", node)
+
+		// Unmount storage
+		if ds.MountPath != "" {
 			unmountCmd := fmt.Sprintf("umount -f %s 2>/dev/null || umount -l %s 2>/dev/null || true",
 				ds.MountPath, ds.MountPath)
-			log.Infow("→ unmounting storage", "node", node, "mount", ds.MountPath, "command", unmountCmd)
 			_, _, _ = sshPool.Run(ctx, node, unmountCmd)
 
 			// Remove mount directory
@@ -1739,18 +1786,18 @@ func teardownDistributedStorage(ctx context.Context, sshPool *ssh.Pool, nodes []
 		}
 
 		// Remove MicroCeph if installed
-		log.Infow("→ removing MicroCeph", "node", node)
 		removeCmds := []string{
 			"snap remove microceph --purge 2>/dev/null || true",
+			"rm -rf /var/snap/microceph 2>/dev/null || true",
+			"rm -rf /var/lib/ceph 2>/dev/null || true",
 		}
 
 		for _, cmd := range removeCmds {
 			_, _, _ = sshPool.Run(ctx, node, cmd)
 		}
 
-		log.Infow("✓ node cleanup complete", "node", node)
+		log.Infow("✓ basic cleanup complete", "node", node)
 	}
 
-	log.Infow("✓ distributed storage teardown complete")
 	return nil
 }
