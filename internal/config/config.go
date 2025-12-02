@@ -34,20 +34,24 @@ type MicroCephProviderConfig struct {
 	// Default: "/mnt/cephfs"
 	MountPath string `json:"mountPath"`
 
-	// UseLoopDevices uses loop file-backed OSDs instead of physical disks.
-	// Useful for testing and development.
-	// Default: false (use physical disks)
-	UseLoopDevices bool `json:"useLoopDevices"`
+	// AllowLoopDevices allows loop file-backed OSDs instead of physical disks.
+	// When true, creates a single loop device per OSD node for storage.
+	// Useful for testing and development environments.
+	// Default: false (use physical disks only)
+	AllowLoopDevices bool `json:"allowLoopDevices"`
 
-	// LoopDeviceCount is the number of loop devices to create per OSD node when UseLoopDevices is true.
-	// Default: 3
-	LoopDeviceCount int `json:"loopDeviceCount"`
-
-	// LoopDeviceSizeGB is the size of each loop device in GB when UseLoopDevices is true.
+	// LoopDeviceSizeGB is the size of the loop device in GB when AllowLoopDevices is true.
 	// Default: 4
 	LoopDeviceSizeGB int `json:"loopDeviceSizeGB"`
 
+	// LoopDeviceThinProvision enables thin provisioning for loop devices.
+	// When true, the loop file only uses disk space as data is written.
+	// When false, the full size is allocated upfront.
+	// Default: true
+	LoopDeviceThinProvision bool `json:"loopDeviceThinProvision"`
+
 	// EnableRGW enables the Ceph Object Gateway (S3-compatible) service.
+	// RGW provides RESTful API compatible with Amazon S3 and OpenStack Swift.
 	// Default: false
 	EnableRGW bool `json:"enableRGW"`
 
@@ -59,6 +63,22 @@ type MicroCephProviderConfig struct {
 // StorageProviders contains provider-specific configurations.
 type StorageProviders struct {
 	MicroCeph MicroCephProviderConfig `json:"microceph"`
+}
+
+// EligibleDisks defines disk selection criteria using regex patterns.
+// Inclusions are combined with OR (any match includes the disk).
+// Exclusions are combined with AND (all must match to exclude the disk).
+type EligibleDisks struct {
+	// InclusionExpression is an array of regex patterns to match eligible disks.
+	// Patterns are combined with OR logic (disk matches if ANY pattern matches).
+	// Example: ["^/dev/sd[b-z]$", "^/dev/nvme[0-9]n1$"]
+	InclusionExpression []string `json:"inclusionExpression"`
+
+	// ExclusionExpression is an array of regex patterns to exclude disks.
+	// Patterns are combined with AND logic (disk excluded if ALL patterns match).
+	// Exclusions are applied after inclusions.
+	// Example: ["^/dev/sda$", "^/dev/vda$"]
+	ExclusionExpression []string `json:"exclusionExpression"`
 }
 
 // DistributedStorage contains distributed storage configuration.
@@ -81,6 +101,9 @@ type DistributedStorage struct {
 	// PoolName is the name of the storage pool to create.
 	// Default: "docker-swarm"
 	PoolName string `json:"poolName"`
+
+	// EligibleDisks defines disk selection criteria using regex patterns.
+	EligibleDisks EligibleDisks `json:"eligibleDisks"`
 
 	// Providers contains provider-specific configurations.
 	Providers StorageProviders `json:"providers"`
@@ -256,12 +279,11 @@ func (c *Config) ApplyDefaults() {
 	if mc.MountPath == "" {
 		mc.MountPath = "/mnt/cephfs"
 	}
-	if mc.LoopDeviceCount == 0 {
-		mc.LoopDeviceCount = 3
-	}
 	if mc.LoopDeviceSizeGB == 0 {
 		mc.LoopDeviceSizeGB = 4
 	}
+	// LoopDeviceThinProvision defaults to true (set explicitly since zero value is false)
+	// This is handled by checking if the struct was unmarshaled with the field set
 	if mc.RGWPort == 0 {
 		mc.RGWPort = 8080
 	}

@@ -79,7 +79,7 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 		log.Infow("creating MicroCeph storage provider",
 			"snapChannel", ds.Providers.MicroCeph.SnapChannel,
 			"mountPath", ds.Providers.MicroCeph.MountPath,
-			"useLoopDevices", ds.Providers.MicroCeph.UseLoopDevices)
+			"allowLoopDevices", ds.Providers.MicroCeph.AllowLoopDevices)
 		return NewMicroCephProvider(cfg), nil
 	case config.StorageProviderNone:
 		return nil, fmt.Errorf("storage provider 'none' does not require a provider")

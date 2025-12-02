@@ -10,14 +10,18 @@
       "enabled": true,
       "provider": "microceph",
       "forceRecreation": false,
-      "poolName": "docker-swarm",
+      "poolName": "docker-swarm-0001",
+      "eligibleDisks": {
+        "inclusionExpression": ["^/dev/sd[b-z]$", "^/dev/nvme[0-9]n1$"],
+        "exclusionExpression": ["^/dev/sda$", "^/dev/vda$"]
+      },
       "providers": {
         "microceph": {
           "snapChannel": "latest/stable",
           "mountPath": "/mnt/cephfs",
-          "useLoopDevices": true,
-          "loopDeviceCount": 3,
+          "allowLoopDevices": true,
           "loopDeviceSizeGB": 10,
+          "loopDeviceThinProvision": true,
           "enableRGW": false,
           "rgwPort": 8080
         }
@@ -30,7 +34,12 @@
         "name": "pre-deployment-example",
         "source": "https://example.com/scripts/pre-check.sh",
         "parameters": "--verbose",
-        "conditions": []
+        "conditions": [
+          {
+            "type": "role",
+            "value": "manager"
+          }
+        ]
       }
     ],
     "postScripts": [
@@ -40,7 +49,13 @@
         "name": "post-deployment-example",
         "source": "https://example.com/scripts/post-validate.sh",
         "parameters": "--verbose",
-        "conditions": []
+        "conditions": [
+          {
+            "type": "label",
+            "key": "environment",
+            "value": "production"
+          }
+        ]
       }
     ]
   },

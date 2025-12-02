@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -116,41 +117,116 @@ func (p *MicroCephProvider) AddStorage(ctx context.Context, sshPool *ssh.Pool, n
 	ds := p.cfg.GetDistributedStorage()
 	mcCfg := ds.Providers.MicroCeph
 
-	if mcCfg.UseLoopDevices {
-		// Add loop devices
-		loopSpec := fmt.Sprintf("loop,%dG,%d", mcCfg.LoopDeviceSizeGB, mcCfg.LoopDeviceCount)
-		addCmd := fmt.Sprintf("microceph disk add %s", loopSpec)
-		log.Infow("adding loop devices", "command", addCmd)
-		if _, stderr, err := sshPool.Run(ctx, node, addCmd); err != nil {
-			return fmt.Errorf("failed to add loop devices: %w (stderr: %s)", err, stderr)
-		}
-		log.Infow("✓ loop devices added", "count", mcCfg.LoopDeviceCount, "sizeGB", mcCfg.LoopDeviceSizeGB)
-	} else {
-		// Auto-detect and add available disks
-		// This will add all unpartitioned disks
-		log.Infow("auto-detecting available disks")
-		listCmd := "lsblk -dpno NAME,TYPE | grep disk | awk '{print $1}'"
-		stdout, _, err := sshPool.Run(ctx, node, listCmd)
-		if err != nil {
-			return fmt.Errorf("failed to list disks: %w", err)
-		}
+	// Get eligible disks using inclusion/exclusion patterns
+	eligibleDisks, err := p.getEligibleDisks(ctx, sshPool, node)
+	if err != nil {
+		log.Warnw("failed to get eligible disks", "error", err)
+	}
 
-		disks := strings.Split(strings.TrimSpace(stdout), "\n")
-		for _, disk := range disks {
-			disk = strings.TrimSpace(disk)
-			if disk == "" || disk == "/dev/sda" || disk == "/dev/vda" {
-				// Skip empty and likely root disks
-				continue
-			}
-			addCmd := fmt.Sprintf("microceph disk add %s --wipe", disk)
-			log.Infow("adding disk", "disk", disk, "command", addCmd)
-			if _, stderr, err := sshPool.Run(ctx, node, addCmd); err != nil {
-				log.Warnw("failed to add disk (may already be in use)", "disk", disk, "error", err, "stderr", stderr)
-			}
+	// Add physical disks first
+	addedDisks := 0
+	for _, disk := range eligibleDisks {
+		addCmd := fmt.Sprintf("microceph disk add %s --wipe", disk)
+		log.Infow("adding disk", "disk", disk, "command", addCmd)
+		if _, stderr, err := sshPool.Run(ctx, node, addCmd); err != nil {
+			log.Warnw("failed to add disk (may already be in use)", "disk", disk, "error", err, "stderr", stderr)
+		} else {
+			addedDisks++
 		}
 	}
 
+	// If no physical disks were added and loop devices are allowed, add a loop device
+	if addedDisks == 0 && mcCfg.AllowLoopDevices {
+		log.Infow("no physical disks added, creating loop device",
+			"sizeGB", mcCfg.LoopDeviceSizeGB,
+			"thinProvision", mcCfg.LoopDeviceThinProvision)
+
+		// MicroCeph loop device format: loop,<size>G,<count>
+		// For thin provisioning, we don't pre-allocate
+		loopSpec := fmt.Sprintf("loop,%dG,1", mcCfg.LoopDeviceSizeGB)
+		addCmd := fmt.Sprintf("microceph disk add %s", loopSpec)
+		log.Infow("adding loop device", "command", addCmd)
+		if _, stderr, err := sshPool.Run(ctx, node, addCmd); err != nil {
+			return fmt.Errorf("failed to add loop device: %w (stderr: %s)", err, stderr)
+		}
+		log.Infow("✓ loop device added", "sizeGB", mcCfg.LoopDeviceSizeGB)
+	} else if addedDisks > 0 {
+		log.Infow("✓ physical disks added", "count", addedDisks)
+	} else {
+		log.Warnw("no storage added - no eligible disks and loop devices not allowed")
+	}
+
 	return nil
+}
+
+// getEligibleDisks returns disks that match inclusion patterns and don't match exclusion patterns.
+func (p *MicroCephProvider) getEligibleDisks(ctx context.Context, sshPool *ssh.Pool, node string) ([]string, error) {
+	log := logging.L().With("component", "microceph", "node", node)
+	ds := p.cfg.GetDistributedStorage()
+
+	// List all available disks
+	listCmd := "lsblk -dpno NAME,TYPE | grep disk | awk '{print $1}'"
+	stdout, _, err := sshPool.Run(ctx, node, listCmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list disks: %w", err)
+	}
+
+	allDisks := strings.Split(strings.TrimSpace(stdout), "\n")
+	var eligibleDisks []string
+
+	inclusions := ds.EligibleDisks.InclusionExpression
+	exclusions := ds.EligibleDisks.ExclusionExpression
+
+	for _, disk := range allDisks {
+		disk = strings.TrimSpace(disk)
+		if disk == "" {
+			continue
+		}
+
+		// Check inclusion patterns (OR logic - any match includes)
+		included := len(inclusions) == 0 // If no inclusions, include all
+		for _, pattern := range inclusions {
+			matched, err := regexp.MatchString(pattern, disk)
+			if err != nil {
+				log.Warnw("invalid inclusion regex", "pattern", pattern, "error", err)
+				continue
+			}
+			if matched {
+				included = true
+				break
+			}
+		}
+
+		if !included {
+			log.Debugw("disk excluded by inclusion patterns", "disk", disk)
+			continue
+		}
+
+		// Check exclusion patterns (AND logic - all must match to exclude)
+		excluded := len(exclusions) > 0
+		for _, pattern := range exclusions {
+			matched, err := regexp.MatchString(pattern, disk)
+			if err != nil {
+				log.Warnw("invalid exclusion regex", "pattern", pattern, "error", err)
+				excluded = false
+				break
+			}
+			if !matched {
+				excluded = false
+				break
+			}
+		}
+
+		if excluded {
+			log.Debugw("disk excluded by exclusion patterns", "disk", disk)
+			continue
+		}
+
+		eligibleDisks = append(eligibleDisks, disk)
+	}
+
+	log.Infow("eligible disks found", "count", len(eligibleDisks), "disks", eligibleDisks)
+	return eligibleDisks, nil
 }
 
 // CreatePool creates a CephFS filesystem for use by containers.
