@@ -27,15 +27,22 @@ const (
 // and workers as OSD nodes (data storage).
 type MicroCephProviderConfig struct {
 	// SnapChannel is the snap channel to install MicroCeph from.
-	// Default: "latest/stable"
+	// Available channels: "squid/stable" (default, recommended), "reef/stable", "quincy/stable", "latest/stable", "latest/edge"
+	// Squid is the current LTS release (Ceph 19.x), Reef is 18.x, Quincy is 17.x
+	// Default: "squid/stable"
 	SnapChannel string `json:"snapChannel"`
+
+	// EnableUpdates enables automatic snap updates for MicroCeph.
+	// When false, the snap is held at the installed version.
+	// Default: false
+	EnableUpdates bool `json:"enableUpdates"`
 
 	// MountPath is where CephFS will be mounted on nodes.
 	// Default: "/mnt/cephfs"
 	MountPath string `json:"mountPath"`
 
 	// AllowLoopDevices allows loop file-backed OSDs instead of physical disks.
-	// When true, creates a single loop device per OSD node for storage.
+	// Loop devices are ONLY created when no eligible physical disks are found (count=0).
 	// Useful for testing and development environments.
 	// Default: false (use physical disks only)
 	AllowLoopDevices bool `json:"allowLoopDevices"`
@@ -275,6 +282,9 @@ func (c *Config) ApplyDefaults() {
 	mc := &ds.Providers.MicroCeph
 	if mc.SnapChannel == "" {
 		mc.SnapChannel = "latest/stable"
+	}
+	if mc.SnapChannel == "" {
+		mc.SnapChannel = "squid/stable"
 	}
 	if mc.MountPath == "" {
 		mc.MountPath = "/mnt/cephfs"

@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"net"
 	"regexp"
 	"strings"
 	"time"
@@ -36,22 +37,32 @@ func (p *MicroCephProvider) GetMountPath() string {
 func (p *MicroCephProvider) Install(ctx context.Context, sshPool *ssh.Pool, node string) error {
 	log := logging.L().With("component", "microceph", "node", node)
 	ds := p.cfg.GetDistributedStorage()
-	channel := ds.Providers.MicroCeph.SnapChannel
+	mcCfg := ds.Providers.MicroCeph
+	channel := mcCfg.SnapChannel
 	if channel == "" {
-		channel = "latest/stable"
+		channel = "squid/stable"
 	}
 
 	// Install microceph snap
 	installCmd := fmt.Sprintf("snap install microceph --channel=%s", channel)
-	log.Infow("installing MicroCeph", "command", installCmd)
+	log.Infow("installing MicroCeph", "command", installCmd, "channel", channel)
 	if _, stderr, err := sshPool.Run(ctx, node, installCmd); err != nil {
 		return fmt.Errorf("failed to install microceph: %w (stderr: %s)", err, stderr)
+	}
+
+	// Hold snap updates if EnableUpdates is false (default)
+	if !mcCfg.EnableUpdates {
+		holdCmd := "snap refresh --hold microceph"
+		log.Infow("holding MicroCeph updates", "command", holdCmd)
+		if _, stderr, err := sshPool.Run(ctx, node, holdCmd); err != nil {
+			log.Warnw("failed to hold snap updates (non-fatal)", "error", err, "stderr", stderr)
+		}
 	}
 
 	// Wait for snap to be ready
 	time.Sleep(2 * time.Second)
 
-	log.Infow("✓ MicroCeph installed")
+	log.Infow("✓ MicroCeph installed", "channel", channel, "updatesEnabled", mcCfg.EnableUpdates)
 	return nil
 }
 
@@ -66,13 +77,103 @@ func (p *MicroCephProvider) Bootstrap(ctx context.Context, sshPool *ssh.Pool, pr
 		// Check if already bootstrapped
 		if strings.Contains(stderr, "already") || strings.Contains(stderr, "exists") {
 			log.Infow("cluster already bootstrapped, continuing")
-			return nil
+		} else {
+			return fmt.Errorf("failed to bootstrap cluster: %w (stderr: %s)", err, stderr)
 		}
-		return fmt.Errorf("failed to bootstrap cluster: %w (stderr: %s)", err, stderr)
+	}
+
+	// Configure Ceph network CIDR using overlay/private network detection
+	// Priority: RFC 6598 (100.64.0.0/10) > RFC 1918 (10/8, 172.16/12, 192.168/16) > don't set
+	if cidr := p.detectNetworkCIDR(ctx, sshPool, primaryNode); cidr != "" {
+		log.Infow("configuring Ceph cluster network", "cidr", cidr)
+		// Set both public and cluster network to the same CIDR
+		// public_network: for client traffic (MON, MDS, RGW)
+		// cluster_network: for OSD replication traffic
+		setCmds := []string{
+			fmt.Sprintf("ceph config set global cluster_network %s", cidr),
+			fmt.Sprintf("ceph config set global public_network %s", cidr),
+		}
+		for _, cmd := range setCmds {
+			log.Infow("setting Ceph network config", "command", cmd)
+			if _, stderr, err := sshPool.Run(ctx, primaryNode, cmd); err != nil {
+				log.Warnw("failed to set network config (non-fatal)", "command", cmd, "error", err, "stderr", stderr)
+			}
+		}
+	} else {
+		log.Infow("no overlay/private network detected, skipping network CIDR configuration")
 	}
 
 	log.Infow("✓ MicroCeph cluster bootstrapped")
 	return nil
+}
+
+// detectNetworkCIDR detects the appropriate network CIDR for Ceph cluster communication.
+// Priority: RFC 6598 overlay (100.64.0.0/10) > RFC 1918 private > none
+func (p *MicroCephProvider) detectNetworkCIDR(ctx context.Context, sshPool *ssh.Pool, node string) string {
+	log := logging.L().With("component", "microceph", "node", node)
+
+	// Get all IPv4 addresses with their CIDR notation
+	// Using 'ip -4 addr show' to get addresses in CIDR format
+	cmd := "ip -4 -o addr show | awk '{print $4}' | grep -v '^127\\.'"
+	stdout, _, err := sshPool.Run(ctx, node, cmd)
+	if err != nil {
+		log.Warnw("failed to detect network addresses", "error", err)
+		return ""
+	}
+
+	var cgnatCIDR, rfc1918CIDR string
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+
+	for _, line := range lines {
+		cidr := strings.TrimSpace(line)
+		if cidr == "" {
+			continue
+		}
+
+		ip, _, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+
+		// Check RFC 6598 (CGNAT - overlay networks like Netbird/Tailscale)
+		// 100.64.0.0/10
+		if ip[0] == 100 && ip[1] >= 64 && ip[1] <= 127 {
+			cgnatCIDR = cidr
+			log.Debugw("found RFC 6598 overlay network", "cidr", cidr)
+			continue
+		}
+
+		// Check RFC 1918 private networks
+		// Priority: 10.0.0.0/8 (Class A) > 172.16.0.0/12 (Class B) > 192.168.0.0/16 (Class C)
+		if ip[0] == 10 {
+			if rfc1918CIDR == "" || !strings.HasPrefix(rfc1918CIDR, "10.") {
+				rfc1918CIDR = cidr
+				log.Debugw("found RFC 1918 Class A network", "cidr", cidr)
+			}
+		} else if ip[0] == 172 && ip[1] >= 16 && ip[1] <= 31 {
+			if rfc1918CIDR == "" || strings.HasPrefix(rfc1918CIDR, "192.168.") {
+				rfc1918CIDR = cidr
+				log.Debugw("found RFC 1918 Class B network", "cidr", cidr)
+			}
+		} else if ip[0] == 192 && ip[1] == 168 {
+			if rfc1918CIDR == "" {
+				rfc1918CIDR = cidr
+				log.Debugw("found RFC 1918 Class C network", "cidr", cidr)
+			}
+		}
+	}
+
+	// Priority: RFC 6598 (overlay) > RFC 1918 (private)
+	if cgnatCIDR != "" {
+		log.Infow("using RFC 6598 overlay network for Ceph", "cidr", cgnatCIDR)
+		return cgnatCIDR
+	}
+	if rfc1918CIDR != "" {
+		log.Infow("using RFC 1918 private network for Ceph", "cidr", rfc1918CIDR)
+		return rfc1918CIDR
+	}
+
+	return ""
 }
 
 // GenerateJoinToken generates a token for a node to join the cluster.

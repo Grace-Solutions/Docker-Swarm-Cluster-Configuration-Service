@@ -9,7 +9,7 @@
     "distributedStorage": {
       "enabled": true,
       "provider": "microceph",
-      "forceRecreation": false,
+      "forceRecreation": true,
       "poolName": "docker-swarm-0001",
       "eligibleDisks": {
         "inclusionExpression": ["^/dev/sd[b-z]$", "^/dev/nvme[0-9]n1$"],
@@ -17,10 +17,11 @@
       },
       "providers": {
         "microceph": {
-          "snapChannel": "latest/stable",
-          "mountPath": "/mnt/cephfs",
+          "snapChannel": "squid/stable",
+          "enableUpdates": false,
+          "mountPath": "/mnt/MicroCephFS/docker-swarm-0001",
           "allowLoopDevices": true,
-          "loopDeviceSizeGB": 10,
+          "loopDeviceSizeGB": 16,
           "loopDeviceThinProvision": true,
           "enableRadosGateway": false,
           "radosGatewayPort": 8080
