@@ -212,13 +212,26 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 
 	primaryMaster := sshManagers[0]                              // SSH hostname for SSH operations
 	primaryMasterAdvertiseAddr := managerAdvertiseAddrs[0]       // Interface:port or IP:port for Swarm advertise address
+	primaryMasterInfo := overlayInfoMap[primaryMaster]
 
-	log.Infow("→ Using advertise addresses for Docker Swarm", "primaryMasterAddr", primaryMasterAdvertiseAddr, "managerAddrs", managerAdvertiseAddrs, "workerAddrs", workerAdvertiseAddrs, "overlayProvider", provider)
+	// Build join address for remote nodes to connect to primary manager
+	// Priority: FQDN > overlay IP (interface names like wt0 won't work remotely)
+	var primaryMasterJoinAddr string
+	if primaryMasterInfo.FQDN != "" && primaryMasterInfo.FQDN != primaryMaster {
+		primaryMasterJoinAddr = primaryMasterInfo.FQDN + ":2377"
+	} else {
+		primaryMasterJoinAddr = primaryMasterInfo.IP + ":2377"
+	}
 
-	if err := orchestrator.SwarmSetup(ctx, sshPool, sshManagers, sshWorkers, managerAdvertiseAddrs, workerAdvertiseAddrs, primaryMasterAdvertiseAddr); err != nil {
+	log.Infow("→ Using addresses for Docker Swarm",
+		"primaryAdvertiseAddr", primaryMasterAdvertiseAddr,
+		"primaryJoinAddr", primaryMasterJoinAddr,
+		"overlayProvider", provider)
+
+	if err := orchestrator.SwarmSetup(ctx, sshPool, sshManagers, sshWorkers, managerAdvertiseAddrs, workerAdvertiseAddrs, primaryMasterAdvertiseAddr, primaryMasterJoinAddr); err != nil {
 		return fmt.Errorf("failed to setup Docker Swarm: %w", err)
 	}
-	log.Infow("✅ Docker Swarm setup complete", "primaryMasterAddr", primaryMasterAdvertiseAddr)
+	log.Infow("✅ Docker Swarm setup complete", "primaryAdvertiseAddr", primaryMasterAdvertiseAddr, "primaryJoinAddr", primaryMasterJoinAddr)
 
 	// Phase 8: Detect geolocation and apply node labels
 	log.Infow("Phase 8: Detecting geolocation and applying node labels")

@@ -18,10 +18,11 @@ import (
 //   sshWorkers: SSH hostnames for all workers - used for SSH operations
 //   managerAdvertiseAddrs: Advertise addresses (interface:port or IP:port) for all managers (including primary)
 //   workerAdvertiseAddrs: Advertise addresses (interface:port or IP:port) for all workers
-//   primaryAdvertiseAddr: Advertise address for the primary manager
+//   primaryAdvertiseAddr: Advertise address for the primary manager (interface:port for local binding)
+//   primaryJoinAddr: Join address for the primary manager (FQDN:port or IP:port for remote nodes to connect)
 //
 // Note: sshManagers and managerAdvertiseAddrs must be parallel arrays (same length, same order)
-func SwarmSetup(ctx context.Context, sshPool *ssh.Pool, sshManagers, sshWorkers, managerAdvertiseAddrs, workerAdvertiseAddrs []string, primaryAdvertiseAddr string) error {
+func SwarmSetup(ctx context.Context, sshPool *ssh.Pool, sshManagers, sshWorkers, managerAdvertiseAddrs, workerAdvertiseAddrs []string, primaryAdvertiseAddr, primaryJoinAddr string) error {
 	log := logging.L().With("component", "orchestrator", "phase", "swarm")
 
 	if len(sshManagers) == 0 {
@@ -36,8 +37,8 @@ func SwarmSetup(ctx context.Context, sshPool *ssh.Pool, sshManagers, sshWorkers,
 
 	primaryManager := sshManagers[0] // SSH hostname for primary manager
 
-	log.Infow(fmt.Sprintf("starting Docker Swarm setup: primaryManager=%s managers=%d workers=%d advertiseAddr=%s",
-		primaryManager, len(sshManagers), len(sshWorkers), primaryAdvertiseAddr))
+	log.Infow(fmt.Sprintf("starting Docker Swarm setup: primaryManager=%s managers=%d workers=%d advertiseAddr=%s joinAddr=%s",
+		primaryManager, len(sshManagers), len(sshWorkers), primaryAdvertiseAddr, primaryJoinAddr))
 
 	// Phase 1: Initialize swarm on primary manager
 	log.Infow("phase 1: initializing Docker Swarm on primary manager")
@@ -64,11 +65,12 @@ func SwarmSetup(ctx context.Context, sshPool *ssh.Pool, sshManagers, sshWorkers,
 	log.Infow(fmt.Sprintf("✓ worker join token retrieved: %s", workerToken[:20]+"..."))
 
 	// Phase 3: Join additional managers (exclude primary manager from the list)
+	// Use primaryJoinAddr (FQDN or IP) so remote nodes can connect
 	additionalSSHManagers := sshManagers[1:]
 
 	if len(additionalSSHManagers) > 0 {
 		log.Infow(fmt.Sprintf("phase 3: joining %d additional manager nodes", len(additionalSSHManagers)))
-		if err := joinNodes(ctx, sshPool, additionalSSHManagers, managerToken, primaryAdvertiseAddr, clusterID); err != nil {
+		if err := joinNodes(ctx, sshPool, additionalSSHManagers, managerToken, primaryJoinAddr, clusterID); err != nil {
 			return fmt.Errorf("failed to join managers: %w", err)
 		}
 	} else {
@@ -78,7 +80,7 @@ func SwarmSetup(ctx context.Context, sshPool *ssh.Pool, sshManagers, sshWorkers,
 	// Phase 4: Join workers
 	if len(sshWorkers) > 0 {
 		log.Infow(fmt.Sprintf("phase 4: joining %d worker nodes", len(sshWorkers)))
-		if err := joinNodes(ctx, sshPool, sshWorkers, workerToken, primaryAdvertiseAddr, clusterID); err != nil {
+		if err := joinNodes(ctx, sshPool, sshWorkers, workerToken, primaryJoinAddr, clusterID); err != nil {
 			return fmt.Errorf("failed to join workers: %w", err)
 		}
 	} else {

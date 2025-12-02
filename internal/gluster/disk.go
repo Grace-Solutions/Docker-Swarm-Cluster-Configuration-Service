@@ -19,14 +19,16 @@ type DiskInfo struct {
 }
 
 // DetectAvailableDisks detects non-OS disks available for GlusterFS on a node.
-// Returns a list of available disks that are not mounted and not the OS disk.
+// Returns a list of available disks that are either:
+// 1. Not mounted at all, OR
+// 2. Already mounted at an expected GlusterFS brick path (reusable)
 func DetectAvailableDisks(ctx context.Context, sshPool *ssh.Pool, host string) ([]DiskInfo, error) {
 	log := logging.L().With("component", "gluster-disk", "host", host)
 
-	// Use lsblk to list all block devices
+	// Use lsblk to list all block devices with their mountpoints
 	// Format: NAME,SIZE,TYPE,MOUNTPOINT
-	// Filter: type=disk, no mountpoint (not mounted)
-	cmd := `lsblk -ndo NAME,SIZE,TYPE,MOUNTPOINT | grep 'disk' | awk '{if ($4 == "") print $1"|"$2"|"$3"|"$4}'`
+	// Include ALL disks (mounted or not) - we'll filter later
+	cmd := `lsblk -ndo NAME,SIZE,TYPE,MOUNTPOINT | grep 'disk' | awk '{print $1"|"$2"|"$3"|"$4}'`
 
 	stdout, stderr, err := sshPool.Run(ctx, host, cmd)
 	if err != nil {
@@ -45,11 +47,16 @@ func DetectAvailableDisks(ctx context.Context, sshPool *ssh.Pool, host string) (
 			continue
 		}
 
+		mountpoint := ""
+		if len(parts) >= 4 {
+			mountpoint = parts[3]
+		}
+
 		disk := DiskInfo{
 			Device:     parts[0],
 			Size:       parts[1],
 			Type:       parts[2],
-			Mountpoint: "",
+			Mountpoint: mountpoint,
 		}
 
 		// Skip if it's the OS disk (usually sda, vda, nvme0n1)
@@ -59,8 +66,19 @@ func DetectAvailableDisks(ctx context.Context, sshPool *ssh.Pool, host string) (
 			continue
 		}
 
-		disks = append(disks, disk)
-		log.Infow("found available disk", "device", disk.Device, "size", disk.Size)
+		// Accept disk if:
+		// 1. Not mounted (available for fresh setup)
+		// 2. Already mounted at a GlusterFS brick path (reusable)
+		if mountpoint == "" {
+			disks = append(disks, disk)
+			log.Infow("found available disk (not mounted)", "device", disk.Device, "size", disk.Size)
+		} else if strings.Contains(mountpoint, "GlusterFS") || strings.Contains(mountpoint, "glusterfs") || strings.Contains(mountpoint, "brick") {
+			// This disk is already mounted for GlusterFS, we can reuse it
+			disks = append(disks, disk)
+			log.Infow("found available disk (already mounted for GlusterFS)", "device", disk.Device, "size", disk.Size, "mountpoint", mountpoint)
+		} else {
+			log.Infow("skipping mounted disk (not GlusterFS)", "device", disk.Device, "mountpoint", mountpoint)
+		}
 	}
 
 	return disks, nil
@@ -80,14 +98,30 @@ func isOSDisk(ctx context.Context, sshPool *ssh.Pool, host, device string) bool 
 
 // FormatAndMountDisk formats a disk with XFS and mounts it at the specified path.
 // It also adds the mount to /etc/fstab for persistence.
+// If the disk is already mounted elsewhere, it unmounts and remounts at the correct path.
 func FormatAndMountDisk(ctx context.Context, sshPool *ssh.Pool, host, device, mountPath string) error {
 	log := logging.L().With("component", "gluster-disk", "host", host, "device", device, "mountPath", mountPath)
 
 	devicePath := fmt.Sprintf("/dev/%s", device)
 
+	// Check if this device is currently mounted somewhere
+	checkDeviceMountCmd := fmt.Sprintf("lsblk -ndo MOUNTPOINT /dev/%s 2>/dev/null || true", device)
+	stdout, _, _ := sshPool.Run(ctx, host, checkDeviceMountCmd)
+	currentMountpoint := strings.TrimSpace(stdout)
+
+	if currentMountpoint != "" && currentMountpoint != mountPath {
+		// Device is mounted somewhere else - unmount it first
+		log.Infow("disk mounted at different path, unmounting first", "currentMount", currentMountpoint)
+		unmountCmd := fmt.Sprintf("umount %s 2>/dev/null || true", devicePath)
+		_, _, _ = sshPool.Run(ctx, host, unmountCmd)
+		// Also remove old fstab entry
+		oldFstabCmd := fmt.Sprintf("sed -i '\\|%s|d' /etc/fstab 2>/dev/null || true", devicePath)
+		_, _, _ = sshPool.Run(ctx, host, oldFstabCmd)
+	}
+
 	// Check if already formatted with XFS
 	checkCmd := fmt.Sprintf("blkid -o value -s TYPE %s 2>/dev/null || true", devicePath)
-	stdout, _, _ := sshPool.Run(ctx, host, checkCmd)
+	stdout, _, _ = sshPool.Run(ctx, host, checkCmd)
 	fsType := strings.TrimSpace(stdout)
 
 	if fsType != "xfs" {
@@ -121,7 +155,7 @@ func FormatAndMountDisk(ctx context.Context, sshPool *ssh.Pool, host, device, mo
 		return fmt.Errorf("failed to create mount directory: %w (stderr: %s)", err, stderr)
 	}
 
-	// Check if already mounted
+	// Check if already mounted at the correct path
 	checkMountCmd := fmt.Sprintf("mountpoint -q %s && echo 'mounted' || echo 'not-mounted'", mountPath)
 	stdout, _, _ = sshPool.Run(ctx, host, checkMountCmd)
 	isMounted := strings.TrimSpace(stdout) == "mounted"
@@ -136,7 +170,7 @@ func FormatAndMountDisk(ctx context.Context, sshPool *ssh.Pool, host, device, mo
 		}
 		log.Infow("✅ disk mounted")
 	} else {
-		log.Infow("disk already mounted")
+		log.Infow("disk already mounted at correct path")
 	}
 
 	// Add to /etc/fstab if not already present
