@@ -3,17 +3,22 @@
     Build script for dswrmctl (Docker Swarm Control) binaries.
 
 .DESCRIPTION
-    Builds dswrmctl for Linux (amd64, arm64), Windows (amd64), and macOS (amd64, arm64).
-    Embeds version information (yyyy-MM-dd-HHmm format), icon, and metadata into binaries.
+    Builds dswrmctl for Linux (amd64, arm64), Windows (amd64, arm64), and macOS (amd64, arm64).
+    Embeds version information (yyyy-MM-dd-HHmm format) and metadata into binaries.
 
 .PARAMETER Clean
     Remove existing binaries before building.
 
+.PARAMETER Verbose
+    Show detailed build progress.
+
 .EXAMPLE
     .\scripts\build.ps1
     .\scripts\build.ps1 -Clean
+    .\scripts\build.ps1 -Verbose
 #>
 
+[CmdletBinding()]
 param(
     [switch]$Clean
 )
@@ -37,11 +42,10 @@ $IconPath = Join-Path $ResourcesDir "0001.ico"
 $Version = Get-Date -Format "yyyy-MM-dd-HHmm"
 $BuildTime = Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ"
 
-Write-Host "============================================" -ForegroundColor Cyan
-Write-Host "  dswrmctl Build Script" -ForegroundColor Cyan
-Write-Host "  Version: $Version" -ForegroundColor Yellow
-Write-Host "============================================" -ForegroundColor Cyan
-Write-Host ""
+Write-Verbose "============================================"
+Write-Verbose "  dswrmctl Build Script"
+Write-Verbose "  Version: $Version"
+Write-Verbose "============================================"
 
 # Ensure output directory exists
 if (-not (Test-Path $OutputDir)) {
@@ -50,7 +54,7 @@ if (-not (Test-Path $OutputDir)) {
 
 # Clean if requested
 if ($Clean) {
-    Write-Host "Cleaning existing binaries..." -ForegroundColor Yellow
+    Write-Verbose "Cleaning existing binaries..."
     Get-ChildItem -Path $OutputDir -Filter "$BinaryName*" | Remove-Item -Force
 }
 
@@ -60,14 +64,14 @@ $Targets = @(
     @("linux",   "arm64", "",     "Linux ARM64"),
     @("darwin",  "amd64", "",     "macOS x86_64"),
     @("darwin",  "arm64", "",     "macOS ARM64 (Apple Silicon)"),
-    @("windows", "amd64", ".exe", "Windows x86_64")
+    @("windows", "amd64", ".exe", "Windows x86_64"),
+    @("windows", "arm64", ".exe", "Windows ARM64")
 )
 
 # ldflags for version embedding
 $LdFlags = "-s -w -X 'main.Version=$Version' -X 'main.BuildTime=$BuildTime' -X 'main.BinaryName=$BinaryName'"
 
-Write-Host "Building $($Targets.Count) targets..." -ForegroundColor Green
-Write-Host ""
+Write-Verbose "Building $($Targets.Count) targets..."
 
 $SuccessCount = 0
 $FailCount = 0
@@ -77,16 +81,16 @@ foreach ($Target in $Targets) {
     $GOARCH = $Target[1]
     $Ext = $Target[2]
     $Desc = $Target[3]
-    
+
     $OutputName = "$BinaryName-$GOOS-$GOARCH$Ext"
     $OutputPath = Join-Path $OutputDir $OutputName
-    
-    Write-Host "  Building $OutputName ($Desc)..." -ForegroundColor White -NoNewline
-    
+
+    Write-Verbose "  Building $OutputName ($Desc)..."
+
     $env:GOOS = $GOOS
     $env:GOARCH = $GOARCH
     $env:CGO_ENABLED = "0"
-    
+
     try {
         # Build command
         $BuildArgs = @(
@@ -95,20 +99,18 @@ foreach ($Target in $Targets) {
             "-o", $OutputPath,
             "./cmd/clusterctl"
         )
-        
+
         $Result = & go @BuildArgs 2>&1
         if ($LASTEXITCODE -ne 0) {
             throw "Build failed: $Result"
         }
-        
+
         $FileSize = (Get-Item $OutputPath).Length / 1MB
-        Write-Host " OK" -ForegroundColor Green -NoNewline
-        Write-Host " ($([math]::Round($FileSize, 2)) MB)" -ForegroundColor DarkGray
+        Write-Verbose "  $OutputName OK ($([math]::Round($FileSize, 2)) MB)"
         $SuccessCount++
     }
     catch {
-        Write-Host " FAILED" -ForegroundColor Red
-        Write-Host "    Error: $_" -ForegroundColor Red
+        Write-Verbose "  $OutputName FAILED: $_"
         $FailCount++
     }
 }
@@ -118,22 +120,20 @@ Remove-Item Env:GOOS -ErrorAction SilentlyContinue
 Remove-Item Env:GOARCH -ErrorAction SilentlyContinue
 Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue
 
-Write-Host ""
-Write-Host "============================================" -ForegroundColor Cyan
-Write-Host "  Build Complete" -ForegroundColor Cyan
-Write-Host "  Success: $SuccessCount / $($Targets.Count)" -ForegroundColor $(if ($FailCount -eq 0) { "Green" } else { "Yellow" })
+Write-Verbose "============================================"
+Write-Verbose "  Build Complete"
+Write-Verbose "  Success: $SuccessCount / $($Targets.Count)"
 if ($FailCount -gt 0) {
-    Write-Host "  Failed: $FailCount" -ForegroundColor Red
+    Write-Verbose "  Failed: $FailCount"
 }
-Write-Host "  Output: $OutputDir" -ForegroundColor White
-Write-Host "============================================" -ForegroundColor Cyan
+Write-Verbose "  Output: $OutputDir"
+Write-Verbose "============================================"
 
 # List built binaries
-Write-Host ""
-Write-Host "Built binaries:" -ForegroundColor Green
+Write-Verbose "Built binaries:"
 Get-ChildItem -Path $OutputDir -Filter "$BinaryName*" | ForEach-Object {
     $SizeMB = [math]::Round($_.Length / 1MB, 2)
-    Write-Host "  $($_.Name) ($SizeMB MB)" -ForegroundColor White
+    Write-Verbose "  $($_.Name) ($SizeMB MB)"
 }
 
 exit $(if ($FailCount -eq 0) { 0 } else { 1 })
