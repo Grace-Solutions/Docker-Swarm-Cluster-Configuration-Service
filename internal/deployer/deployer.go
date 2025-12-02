@@ -1746,11 +1746,12 @@ func getGlusterHostnames(ctx context.Context, sshPool *ssh.Pool, cfg *config.Con
 			overlayHostnames = append(overlayHostnames, sshHost)
 		} else {
 			log.Infow("→ overlay info for GlusterFS", "sshHost", sshHost, "fqdn", overlayInfo.FQDN, "ip", overlayInfo.IP, "interface", overlayInfo.Interface)
-			// Use overlay IP for GlusterFS (not FQDN)
-			// Reason: When we probe peers, they store the orchestrator by IP (not FQDN)
-			// So volume creation must also use IPs for peers to recognize each other
-			// The FQDN will appear in "Other names" field
-			overlayHostnames = append(overlayHostnames, overlayInfo.IP)
+			// Use overlay FQDN for GlusterFS (e.g., node1.netbird.cloud)
+			// FQDNs are preferred because:
+			// 1. They are stable identifiers that don't change
+			// 2. Public IPs are never used (GlusterFS ports not exposed publicly)
+			// 3. Both peer probe and volume creation use the same identifier
+			overlayHostnames = append(overlayHostnames, overlayInfo.FQDN)
 		}
 	}
 
@@ -1776,11 +1777,16 @@ func teardownGlusterFS(ctx context.Context, sshPool *ssh.Pool, workers []string,
 	deleteCmd := fmt.Sprintf("gluster volume delete %s 2>/dev/null || true", volume)
 	_, _, _ = sshPool.Run(ctx, orchestrator, deleteCmd)
 
-	// Detach peers
-	if len(workers) > 1 {
-		for _, worker := range workers[1:] {
-			log.Infow("→ detaching peer", "peer", worker, "orchestrator", orchestrator)
-			detachCmd := fmt.Sprintf("gluster peer detach %s force 2>/dev/null || true", worker)
+	// Detach ALL peers from orchestrator's perspective
+	// First get the list of all peers (by any identity - FQDN, IP, etc.)
+	log.Infow("→ detaching all peers from orchestrator")
+	peerListCmd := "gluster peer status 2>/dev/null | grep -E '^Hostname:' | awk '{print $2}' || true"
+	stdout, _, _ := sshPool.Run(ctx, orchestrator, peerListCmd)
+	for _, peer := range strings.Split(stdout, "\n") {
+		peer = strings.TrimSpace(peer)
+		if peer != "" {
+			log.Infow("→ detaching peer", "peer", peer, "orchestrator", orchestrator)
+			detachCmd := fmt.Sprintf("gluster peer detach %s force 2>/dev/null || true", peer)
 			_, _, _ = sshPool.Run(ctx, orchestrator, detachCmd)
 		}
 	}
@@ -1821,6 +1827,19 @@ func teardownGlusterFS(ctx context.Context, sshPool *ssh.Pool, workers []string,
 		removeMountCmd := fmt.Sprintf("rm -rf %s 2>/dev/null || true", mount)
 		log.Infow("→ removing mount directory", "worker", worker, "mount", mount)
 		_, _, _ = sshPool.Run(ctx, worker, removeMountCmd)
+
+		// Reset glusterd state completely by removing all peer info
+		// This ensures a clean slate when re-creating the cluster
+		log.Infow("→ resetting glusterd peer state", "worker", worker)
+		resetCmds := []string{
+			"systemctl stop glusterd 2>/dev/null || true",
+			"rm -rf /var/lib/glusterd/peers/* 2>/dev/null || true",
+			"rm -rf /var/lib/glusterd/vols/* 2>/dev/null || true",
+			"systemctl start glusterd 2>/dev/null || true",
+		}
+		for _, cmd := range resetCmds {
+			_, _, _ = sshPool.Run(ctx, worker, cmd)
+		}
 
 		log.Infow("✓ worker cleanup complete", "worker", worker)
 	}
