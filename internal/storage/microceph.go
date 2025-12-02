@@ -239,18 +239,26 @@ func (p *MicroCephProvider) AddStorage(ctx context.Context, sshPool *ssh.Pool, n
 	// If no physical disks were added and loop devices are allowed, add a loop device
 	if addedDisks == 0 && mcCfg.AllowLoopDevices {
 		log.Infow("no physical disks added, creating loop device",
+			"directory", mcCfg.LoopDeviceDirectory,
 			"sizeGB", mcCfg.LoopDeviceSizeGB,
 			"thinProvision", mcCfg.LoopDeviceThinProvision)
 
+		// Ensure loop device directory exists
+		mkdirCmd := fmt.Sprintf("mkdir -p %s", mcCfg.LoopDeviceDirectory)
+		log.Infow("ensuring loop device directory exists", "command", mkdirCmd)
+		if _, stderr, err := sshPool.Run(ctx, node, mkdirCmd); err != nil {
+			return fmt.Errorf("failed to create loop device directory: %w (stderr: %s)", err, stderr)
+		}
+
 		// MicroCeph loop device format: loop,<size>G,<count>
-		// For thin provisioning, we don't pre-allocate
+		// The --data-dir flag specifies where to store the loop file
 		loopSpec := fmt.Sprintf("loop,%dG,1", mcCfg.LoopDeviceSizeGB)
-		addCmd := fmt.Sprintf("microceph disk add %s", loopSpec)
+		addCmd := fmt.Sprintf("microceph disk add %s --data-dir %s", loopSpec, mcCfg.LoopDeviceDirectory)
 		log.Infow("adding loop device", "command", addCmd)
 		if _, stderr, err := sshPool.Run(ctx, node, addCmd); err != nil {
 			return fmt.Errorf("failed to add loop device: %w (stderr: %s)", err, stderr)
 		}
-		log.Infow("✓ loop device added", "sizeGB", mcCfg.LoopDeviceSizeGB)
+		log.Infow("✓ loop device added", "directory", mcCfg.LoopDeviceDirectory, "sizeGB", mcCfg.LoopDeviceSizeGB)
 	} else if addedDisks > 0 {
 		log.Infow("✓ physical disks added", "count", addedDisks)
 	} else {
@@ -303,23 +311,23 @@ func (p *MicroCephProvider) getEligibleDisks(ctx context.Context, sshPool *ssh.P
 			continue
 		}
 
-		// Check exclusion patterns (AND logic - all must match to exclude)
-		excluded := len(exclusions) > 0
+		// Check exclusion patterns (OR logic - any match excludes)
+		// "Must not match this or this" - if disk matches ANY exclusion, it's excluded
+		excluded := false
 		for _, pattern := range exclusions {
 			matched, err := regexp.MatchString(pattern, disk)
 			if err != nil {
 				log.Warnw("invalid exclusion regex", "pattern", pattern, "error", err)
-				excluded = false
-				break
+				continue
 			}
-			if !matched {
-				excluded = false
+			if matched {
+				excluded = true
+				log.Debugw("disk excluded by pattern", "disk", disk, "pattern", pattern)
 				break
 			}
 		}
 
 		if excluded {
-			log.Debugw("disk excluded by exclusion patterns", "disk", disk)
 			continue
 		}
 

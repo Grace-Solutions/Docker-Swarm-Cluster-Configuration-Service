@@ -47,6 +47,11 @@ type MicroCephProviderConfig struct {
 	// Default: false (use physical disks only)
 	AllowLoopDevices bool `json:"allowLoopDevices"`
 
+	// LoopDeviceDirectory is the directory where loop device image files are stored.
+	// This directory will be automatically created if it doesn't exist.
+	// Default: "/var/snap/microceph/common"
+	LoopDeviceDirectory string `json:"loopDeviceDirectory"`
+
 	// LoopDeviceSizeGB is the size of the loop device in GB when AllowLoopDevices is true.
 	// Default: 4
 	LoopDeviceSizeGB int `json:"loopDeviceSizeGB"`
@@ -288,6 +293,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if mc.MountPath == "" {
 		mc.MountPath = "/mnt/cephfs"
+	}
+	if mc.LoopDeviceDirectory == "" {
+		mc.LoopDeviceDirectory = "/var/snap/microceph/common"
 	}
 	if mc.LoopDeviceSizeGB == 0 {
 		mc.LoopDeviceSizeGB = 4
