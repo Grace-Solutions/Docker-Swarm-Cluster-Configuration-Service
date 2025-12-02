@@ -1883,14 +1883,6 @@ func verifyStorageTeardown(ctx context.Context, sshPool *ssh.Pool, node string, 
 		allClean = false
 	}
 
-	// Check 5: GlusterFS should not be installed (detect legacy)
-	glusterCheck := "which gluster 2>/dev/null || dpkg -l | grep -q glusterfs && echo 'installed' || echo 'clean'"
-	stdout, _, _ = sshPool.Run(ctx, node, glusterCheck)
-	if strings.Contains(stdout, "installed") || strings.Contains(stdout, "/gluster") {
-		log.Warnw("GlusterFS detected on node - run scripts/teardown-glusterfs.sh first")
-		allClean = false
-	}
-
 	if allClean {
 		log.Infow("✓ Node verified clean")
 	}
