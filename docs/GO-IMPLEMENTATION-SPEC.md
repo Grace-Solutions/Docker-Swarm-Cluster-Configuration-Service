@@ -46,7 +46,7 @@ Internal components (Go packages):
 - `gluster` – GlusterFS topology, bricks, volumes, mounts.
 - `controller` – master-side TCP server + state store + optional gating.
 - `nodeagent` – client-side registration + converge logic.
-- `logging` – plain-text logs with log levels, writing `[utc-timestamp] - [LEVEL] - message` lines to stderr and an optional log file (`CLUSTERCTL_LOG_FILE`) with level controlled by `CLUSTERCTL_LOG_LEVEL`.
+- `logging` – plain-text logs with log levels, writing `[utc-timestamp] - [LEVEL] - message` lines to stderr and an optional log file (`DSWRMCTL_LOG_FILE`) with level controlled by `DSWRMCTL_LOG_LEVEL`.
 
 Data store: simple local filesystem under a “state dir” (e.g.
 `/mnt/GlusterFS/0001/data`) using JSON or BoltDB for durability.
