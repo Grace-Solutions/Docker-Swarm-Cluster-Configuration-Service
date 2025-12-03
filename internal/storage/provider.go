@@ -153,16 +153,6 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 
 	primaryNode := managers[0]
 
-	// Step 1: Install storage software on all nodes
-	log.Infow("→ Step 1: Installing storage software on all nodes")
-	for _, node := range allNodes {
-		log.Infow(fmtNode("→", node, "installing MicroCeph"))
-		if err := provider.Install(ctx, sshPool, node); err != nil {
-			return fmt.Errorf("failed to install storage on %s: %w", node, err)
-		}
-		log.Infow(fmtNode("✓", node, "MicroCeph installed"))
-	}
-
 	// Helper to check if a node should have OSD storage based on role
 	// Managers (role=manager) = MON only, no disks
 	// Workers (role=worker) = OSD, gets disks
@@ -188,20 +178,47 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 		return false
 	}
 
-	// Step 2: Bootstrap the primary manager node (first MON)
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	// PHASE 1: Bootstrap primary manager (must complete before anything else)
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	log.Infow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	log.Infow("PHASE 1: Bootstrap Primary Manager")
+	log.Infow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+	// Step 1a: Install on primary manager only
+	log.Infow(fmtNode("→", primaryNode, "installing MicroCeph on primary"))
+	if err := provider.Install(ctx, sshPool, primaryNode); err != nil {
+		return fmt.Errorf("failed to install storage on primary %s: %w", primaryNode, err)
+	}
+	log.Infow(fmtNode("✓", primaryNode, "MicroCeph installed"))
+
+	// Step 1b: Bootstrap the primary manager (first MON)
 	log.Infow(fmtNode("→", primaryNode, "bootstrapping primary MON node"))
 	if err := provider.Bootstrap(ctx, sshPool, primaryNode); err != nil {
 		return fmt.Errorf("failed to bootstrap primary node %s: %w", primaryNode, err)
 	}
 	log.Infow(fmtNode("✓", primaryNode, "primary MON node bootstrapped"))
 
-	// Step 3: Join additional manager nodes (MONs for quorum)
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	// PHASE 2: Join additional MON nodes (managers)
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	if len(managers) > 1 {
-		log.Infow("→ Step 3: Joining additional MON nodes", "count", len(managers)-1)
+		log.Infow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		log.Infow("PHASE 2: Join Additional MON Nodes", "count", len(managers)-1)
+		log.Infow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
 		for i := 1; i < len(managers); i++ {
 			node := managers[i]
-			log.Infow(fmtNode("→", node, fmt.Sprintf("joining MON node to cluster (%d/%d)", i+1, len(managers))))
 
+			// Install MicroCeph on this node first
+			log.Infow(fmtNode("→", node, fmt.Sprintf("installing MicroCeph (%d/%d)", i+1, len(managers))))
+			if err := provider.Install(ctx, sshPool, node); err != nil {
+				return fmt.Errorf("failed to install storage on %s: %w", node, err)
+			}
+			log.Infow(fmtNode("✓", node, "MicroCeph installed"))
+
+			// Generate join token and join
+			log.Infow(fmtNode("→", node, fmt.Sprintf("joining MON node to cluster (%d/%d)", i+1, len(managers))))
 			token, err := provider.GenerateJoinToken(ctx, sshPool, primaryNode, node)
 			if err != nil {
 				return fmt.Errorf("failed to generate join token for %s: %w", node, err)
@@ -214,12 +231,24 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 		}
 	}
 
-	// Step 4: Join worker nodes (OSDs)
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	// PHASE 3: Join OSD nodes (workers)
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	if len(workers) > 0 {
-		log.Infow("→ Step 4: Joining OSD nodes", "count", len(workers))
-		for i, node := range workers {
-			log.Infow(fmtNode("→", node, fmt.Sprintf("joining OSD node to cluster (%d/%d)", i+1, len(workers))))
+		log.Infow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		log.Infow("PHASE 3: Join OSD Nodes", "count", len(workers))
+		log.Infow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
+		for i, node := range workers {
+			// Install MicroCeph on this node first
+			log.Infow(fmtNode("→", node, fmt.Sprintf("installing MicroCeph (%d/%d)", i+1, len(workers))))
+			if err := provider.Install(ctx, sshPool, node); err != nil {
+				return fmt.Errorf("failed to install storage on %s: %w", node, err)
+			}
+			log.Infow(fmtNode("✓", node, "MicroCeph installed"))
+
+			// Generate join token and join
+			log.Infow(fmtNode("→", node, fmt.Sprintf("joining OSD node to cluster (%d/%d)", i+1, len(workers))))
 			token, err := provider.GenerateJoinToken(ctx, sshPool, primaryNode, node)
 			if err != nil {
 				return fmt.Errorf("failed to generate join token for %s: %w", node, err)
