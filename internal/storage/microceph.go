@@ -65,12 +65,20 @@ func (p *MicroCephProvider) Install(ctx context.Context, sshPool *ssh.Pool, node
 		}
 	}
 
-	// Wait for MicroCeph daemon service to be active (up to 20 seconds)
-	// Use systemctl status which returns immediately with current state
+	// Phase 1: Wait for MicroCeph daemon service to be active (up to 20 seconds)
 	log.Infow("waiting for MicroCeph daemon service to start")
 	waitServiceCmd := `for i in $(seq 1 10); do systemctl status snap.microceph.daemon.service --no-pager 2>/dev/null | grep -q "active (running)" && exit 0; sleep 2; done; exit 1`
 	if _, _, err := sshPool.Run(ctx, node, waitServiceCmd); err != nil {
 		log.Warnw("MicroCeph daemon service may not be active yet (continuing)")
+	}
+
+	// Phase 2: Wait for MicroCeph database to be ready (up to 30 seconds)
+	// The daemon starts but database initialization takes additional time
+	// "Error: failed listing disks: Database is still starting" indicates this state
+	log.Infow("waiting for MicroCeph database to initialize")
+	waitDbCmd := `for i in $(seq 1 15); do microceph status >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1`
+	if _, _, err := sshPool.Run(ctx, node, waitDbCmd); err != nil {
+		log.Warnw("MicroCeph database may not be ready yet (will retry during bootstrap)")
 	}
 
 	log.Infow("✓ MicroCeph installed", "channel", channel, "updatesEnabled", mcCfg.EnableUpdates)
@@ -81,17 +89,29 @@ func (p *MicroCephProvider) Install(ctx context.Context, sshPool *ssh.Pool, node
 func (p *MicroCephProvider) Bootstrap(ctx context.Context, sshPool *ssh.Pool, primaryNode string) error {
 	log := logging.L().With("component", "microceph", "node", primaryNode)
 
-	// Verify MicroCeph daemon is running before bootstrapping
+	// Verify MicroCeph daemon service is running
 	log.Infow("verifying MicroCeph daemon is running")
 	statusCmd := `systemctl status snap.microceph.daemon.service --no-pager 2>/dev/null | grep -q "active (running)" && echo "running" || echo "not running"`
 	stdout, _, _ := sshPool.Run(ctx, primaryNode, statusCmd)
 	if !strings.Contains(stdout, "running") || strings.Contains(stdout, "not running") {
-		log.Warnw("MicroCeph daemon may not be fully ready, attempting bootstrap anyway")
+		log.Warnw("MicroCeph daemon service not running")
+	}
+
+	// Verify MicroCeph database is ready (microceph status succeeds)
+	log.Infow("verifying MicroCeph database is ready")
+	dbCheckCmd := "microceph status >/dev/null 2>&1 && echo 'ready' || echo 'not ready'"
+	stdout, _, _ = sshPool.Run(ctx, primaryNode, dbCheckCmd)
+	if strings.Contains(stdout, "not ready") {
+		// Wait a bit more for database
+		log.Infow("waiting for MicroCeph database to initialize")
+		waitDbCmd := `for i in $(seq 1 15); do microceph status >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1`
+		if _, _, err := sshPool.Run(ctx, primaryNode, waitDbCmd); err != nil {
+			log.Warnw("MicroCeph database may not be ready, attempting bootstrap anyway")
+		}
 	}
 
 	// Bootstrap the cluster with retry logic
 	// Use 'microceph cluster bootstrap' for reef/stable channel
-	// The control.socket can take time to become responsive
 	bootstrapCmd := "microceph cluster bootstrap"
 	log.Infow("bootstrapping MicroCeph cluster", "command", bootstrapCmd)
 
@@ -268,11 +288,23 @@ func (p *MicroCephProvider) Join(ctx context.Context, sshPool *ssh.Pool, node, t
 		return fmt.Errorf("no join token and node not in cluster")
 	}
 
-	// Verify MicroCeph daemon is running on joining node
+	// Verify MicroCeph daemon service is running on joining node
 	statusCmd := `systemctl status snap.microceph.daemon.service --no-pager 2>/dev/null | grep -q "active (running)" && echo "running" || echo "not running"`
 	stdout, _, _ := sshPool.Run(ctx, node, statusCmd)
 	if !strings.Contains(stdout, "running") || strings.Contains(stdout, "not running") {
-		log.Warnw("MicroCeph daemon may not be fully ready on joining node")
+		log.Warnw("MicroCeph daemon service not running on joining node")
+	}
+
+	// Verify MicroCeph database is ready on joining node
+	dbCheckCmd := "microceph status >/dev/null 2>&1 && echo 'ready' || echo 'not ready'"
+	stdout, _, _ = sshPool.Run(ctx, node, dbCheckCmd)
+	if strings.Contains(stdout, "not ready") {
+		// Wait for database to be ready
+		log.Infow("waiting for MicroCeph database to initialize on joining node")
+		waitDbCmd := `for i in $(seq 1 15); do microceph status >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1`
+		if _, _, err := sshPool.Run(ctx, node, waitDbCmd); err != nil {
+			log.Warnw("MicroCeph database may not be ready on joining node, attempting join anyway")
+		}
 	}
 
 	// Join the cluster using the token
@@ -287,7 +319,8 @@ func (p *MicroCephProvider) Join(ctx context.Context, sshPool *ssh.Pool, node, t
 		return fmt.Errorf("failed to join cluster: %w (stderr: %s)", err, stderr)
 	}
 
-	// Verify join succeeded
+	// Verify join succeeded with microceph status
+	log.Infow("verifying node joined cluster")
 	if _, stderr, err := sshPool.Run(ctx, node, "microceph status"); err != nil {
 		return fmt.Errorf("join succeeded but status check failed: %w (stderr: %s)", err, stderr)
 	}
