@@ -65,20 +65,14 @@ func (p *MicroCephProvider) Install(ctx context.Context, sshPool *ssh.Pool, node
 		}
 	}
 
-	// Phase 1: Wait for MicroCeph daemon service to be active (up to 20 seconds)
-	log.Infow("waiting for MicroCeph daemon service to start")
-	waitServiceCmd := `for i in $(seq 1 10); do systemctl status snap.microceph.daemon.service --no-pager 2>/dev/null | grep -q "active (running)" && exit 0; sleep 2; done; exit 1`
-	if _, _, err := sshPool.Run(ctx, node, waitServiceCmd); err != nil {
-		log.Warnw("MicroCeph daemon service may not be active yet (continuing)")
-	}
+	// Give the daemon a few seconds to start, then check service logs
+	log.Infow("waiting for MicroCeph daemon to initialize")
+	time.Sleep(5 * time.Second)
 
-	// Phase 2: Wait for MicroCeph database to be ready (up to 30 seconds)
-	// The daemon starts but database initialization takes additional time
-	// "Error: failed listing disks: Database is still starting" indicates this state
-	log.Infow("waiting for MicroCeph database to initialize")
-	waitDbCmd := `for i in $(seq 1 15); do microceph status >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1`
-	if _, _, err := sshPool.Run(ctx, node, waitDbCmd); err != nil {
-		log.Warnw("MicroCeph database may not be ready yet (will retry during bootstrap)")
+	// Read service logs to see current state (don't poll, just read once)
+	logCmd := "journalctl -u snap.microceph.daemon.service --no-pager -n 20 2>/dev/null || echo 'no logs available'"
+	if stdout, _, err := sshPool.Run(ctx, node, logCmd); err == nil && stdout != "" {
+		log.Infow("MicroCeph daemon logs", "logs", strings.TrimSpace(stdout))
 	}
 
 	log.Infow("✓ MicroCeph installed", "channel", channel, "updatesEnabled", mcCfg.EnableUpdates)
@@ -89,12 +83,11 @@ func (p *MicroCephProvider) Install(ctx context.Context, sshPool *ssh.Pool, node
 func (p *MicroCephProvider) Bootstrap(ctx context.Context, sshPool *ssh.Pool, primaryNode string) error {
 	log := logging.L().With("component", "microceph", "node", primaryNode)
 
-	// Verify MicroCeph daemon service is running
-	log.Infow("verifying MicroCeph daemon is running")
-	statusCmd := `systemctl status snap.microceph.daemon.service --no-pager 2>/dev/null | grep -q "active (running)" && echo "running" || echo "not running"`
-	stdout, _, _ := sshPool.Run(ctx, primaryNode, statusCmd)
-	if !strings.Contains(stdout, "running") || strings.Contains(stdout, "not running") {
-		log.Warnw("MicroCeph daemon service not running")
+	// Read service logs to check current state
+	log.Infow("checking MicroCeph daemon service logs")
+	logCmd := "journalctl -u snap.microceph.daemon.service --no-pager -n 30 2>/dev/null || echo 'no logs available'"
+	if stdout, _, err := sshPool.Run(ctx, primaryNode, logCmd); err == nil && stdout != "" {
+		log.Infow("MicroCeph daemon logs", "logs", strings.TrimSpace(stdout))
 	}
 
 	// Detect the best network for Ceph BEFORE bootstrap
@@ -109,8 +102,6 @@ func (p *MicroCephProvider) Bootstrap(ctx context.Context, sshPool *ssh.Pool, pr
 	}
 
 	// Build bootstrap command with network binding options
-	// --mon-ip: IP address for MON service binding
-	// --cluster-network: CIDR for OSD replication traffic
 	bootstrapCmd := "microceph cluster bootstrap"
 	if netInfo != nil {
 		// --microceph-ip: Network address microceph daemon binds to (internal cluster communication)
@@ -119,31 +110,44 @@ func (p *MicroCephProvider) Bootstrap(ctx context.Context, sshPool *ssh.Pool, pr
 		bootstrapCmd = fmt.Sprintf("microceph cluster bootstrap --microceph-ip %s --mon-ip %s --cluster-network %s",
 			netInfo.IP, netInfo.IP, netInfo.CIDR)
 	}
-	log.Infow("bootstrapping MicroCeph cluster", "command", bootstrapCmd)
+
+	// Log the full command for easy copy/paste debugging
+	log.Infow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	log.Infow("BOOTSTRAP COMMAND (copy for manual debugging):")
+	log.Infow(bootstrapCmd)
+	log.Infow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 	var lastErr error
 	for attempt := 1; attempt <= 5; attempt++ {
-		_, stderr, err := sshPool.Run(ctx, primaryNode, bootstrapCmd)
+		stdout, stderr, err := sshPool.Run(ctx, primaryNode, bootstrapCmd)
 		if err == nil {
-			log.Infow("MicroCeph cluster bootstrap succeeded")
+			log.Infow("✓ MicroCeph cluster bootstrap succeeded")
+			if stdout != "" {
+				log.Infow("bootstrap stdout", "output", strings.TrimSpace(stdout))
+			}
 			lastErr = nil
 			break
 		}
+
+		// Log stderr for debugging
+		if stderr != "" {
+			log.Warnw("bootstrap stderr", "stderr", strings.TrimSpace(stderr))
+		}
+
 		// Check if already bootstrapped
 		if strings.Contains(stderr, "already") || strings.Contains(stderr, "exists") || strings.Contains(stderr, "initialized") || strings.Contains(stderr, "This node is already part of a MicroCeph cluster") {
 			log.Infow("cluster already bootstrapped, continuing")
 			lastErr = nil
 			break
 		}
-		// Check for context deadline - this means daemon needs more time
-		if strings.Contains(stderr, "context deadline exceeded") || strings.Contains(stderr, "control.socket") {
-			log.Warnw("MicroCeph daemon not ready, retrying", "attempt", attempt, "maxAttempts", 5, "stderr", stderr)
-			time.Sleep(15 * time.Second)
-			lastErr = fmt.Errorf("failed to bootstrap cluster: %w (stderr: %s)", err, stderr)
-			continue
+
+		// On failure, read service logs for more context
+		log.Warnw("bootstrap attempt failed", "attempt", attempt, "maxAttempts", 5)
+		if logOut, _, logErr := sshPool.Run(ctx, primaryNode, logCmd); logErr == nil && logOut != "" {
+			log.Infow("daemon logs after failure", "logs", strings.TrimSpace(logOut))
 		}
+
 		lastErr = fmt.Errorf("failed to bootstrap cluster: %w (stderr: %s)", err, stderr)
-		log.Warnw("bootstrap failed, retrying", "attempt", attempt, "maxAttempts", 5, "stderr", stderr)
 		time.Sleep(10 * time.Second)
 	}
 	if lastErr != nil {
@@ -154,6 +158,7 @@ func (p *MicroCephProvider) Bootstrap(ctx context.Context, sshPool *ssh.Pool, pr
 	log.Infow("verifying MicroCeph cluster status")
 	stdout, stderr, err := sshPool.Run(ctx, primaryNode, "microceph status")
 	if err != nil {
+		log.Warnw("status check stderr", "stderr", strings.TrimSpace(stderr))
 		return fmt.Errorf("cluster bootstrap succeeded but status check failed: %w (stderr: %s)", err, stderr)
 	}
 	log.Infow("MicroCeph cluster status verified", "status", strings.TrimSpace(stdout))
