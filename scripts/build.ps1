@@ -61,10 +61,10 @@ if (-not (Test-Path $OutputDir)) {
     New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 }
 
-# Clean if requested
+# Clean if requested (only binary files, not .json.example or other non-binary files)
 if ($Clean) {
     Write-Verbose "Cleaning existing binaries..."
-    Get-ChildItem -Path $OutputDir -Filter "$BinaryName*" | Remove-Item -Force
+    Get-ChildItem -Path $OutputDir -Filter "$BinaryName-*" | Where-Object { $_.Extension -ne ".example" -and $_.Name -notlike "*.json*" } | Remove-Item -Force
 }
 
 # Build targets: [GOOS, GOARCH, Extension, Description]
