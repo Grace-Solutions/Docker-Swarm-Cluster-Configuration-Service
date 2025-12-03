@@ -21,14 +21,14 @@
   "StringFileInfo": {
     "Comments": "Docker Swarm Cluster Orchestration Tool",
     "CompanyName": "Grace Solutions",
-    "FileDescription": "dswrmctl - Docker Swarm Cluster Orchestrator",
+    "FileDescription": "Docker Swarm Cluster Orchestrator",
     "FileVersion": "2025.12.3.0",
     "InternalName": "dswrmctl",
     "LegalCopyright": "Copyright (c) 2025 Grace Solutions",
     "LegalTrademarks": "",
     "OriginalFilename": "dswrmctl.exe",
     "PrivateBuild": "",
-    "ProductName": "Docker Swarm Control (dswrmctl)",
+    "ProductName": "Docker Swarm Cluster Orchestrator",
     "ProductVersion": "2025.12.3.0",
     "SpecialBuild": ""
   },
