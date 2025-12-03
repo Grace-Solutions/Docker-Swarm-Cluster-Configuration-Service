@@ -170,9 +170,19 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 	}
 	log.Infow(fmtNode("✓", primaryNode, "primary MON node bootstrapped"))
 
-	// Step 3: Join additional manager nodes (MONs for quorum)
+	// Step 3: Add storage on primary node (before joining others)
+	// This ensures at least one OSD exists before expanding the cluster
+	log.Infow(fmtNode("→", primaryNode, "adding storage to primary node"))
+	if err := provider.AddStorage(ctx, sshPool, primaryNode); err != nil {
+		// Non-fatal - primary might not have eligible disks
+		log.Warnw(fmtNode("⚠", primaryNode, fmt.Sprintf("failed to add storage (may have no eligible disks): %v", err)))
+	} else {
+		log.Infow(fmtNode("✓", primaryNode, "storage added to primary node"))
+	}
+
+	// Step 4: Join additional manager nodes (MONs) and add their storage
 	if len(managers) > 1 {
-		log.Infow("→ Step 3: Joining additional MON nodes", "count", len(managers)-1)
+		log.Infow("→ Step 4: Joining additional MON nodes", "count", len(managers)-1)
 		for i := 1; i < len(managers); i++ {
 			node := managers[i]
 			log.Infow(fmtNode("→", node, fmt.Sprintf("joining MON node to cluster (%d/%d)", i+1, len(managers))))
@@ -186,12 +196,20 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 				return fmt.Errorf("failed to join MON node %s to cluster: %w", node, err)
 			}
 			log.Infow(fmtNode("✓", node, "MON node joined cluster"))
+
+			// Add storage on this MON node too
+			log.Infow(fmtNode("→", node, "adding storage to MON node"))
+			if err := provider.AddStorage(ctx, sshPool, node); err != nil {
+				log.Warnw(fmtNode("⚠", node, fmt.Sprintf("failed to add storage (may have no eligible disks): %v", err)))
+			} else {
+				log.Infow(fmtNode("✓", node, "storage added to MON node"))
+			}
 		}
 	}
 
-	// Step 4: Join worker nodes (OSDs)
+	// Step 5: Join worker nodes (OSDs) and add their storage
 	if len(workers) > 0 {
-		log.Infow("→ Step 4: Joining OSD nodes", "count", len(workers))
+		log.Infow("→ Step 5: Joining OSD nodes", "count", len(workers))
 		for i, node := range workers {
 			log.Infow(fmtNode("→", node, fmt.Sprintf("joining OSD node to cluster (%d/%d)", i+1, len(workers))))
 
@@ -204,18 +222,13 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 				return fmt.Errorf("failed to join OSD node %s to cluster: %w", node, err)
 			}
 			log.Infow(fmtNode("✓", node, "OSD node joined cluster"))
-		}
-	}
 
-	// Step 5: Add storage (OSDs) only on worker nodes
-	if len(workers) > 0 {
-		log.Infow("→ Step 5: Adding storage to OSD nodes", "count", len(workers))
-		for _, node := range workers {
-			log.Infow(fmtNode("→", node, "adding storage"))
+			// Add storage on this worker node
+			log.Infow(fmtNode("→", node, "adding storage to OSD node"))
 			if err := provider.AddStorage(ctx, sshPool, node); err != nil {
 				return fmt.Errorf("failed to add storage on %s: %w", node, err)
 			}
-			log.Infow(fmtNode("✓", node, "storage added"))
+			log.Infow(fmtNode("✓", node, "storage added to OSD node"))
 		}
 	} else {
 		log.Warnw("no worker nodes configured for OSD storage")

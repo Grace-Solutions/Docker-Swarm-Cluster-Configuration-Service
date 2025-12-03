@@ -515,6 +515,11 @@ func (p *MicroCephProvider) Mount(ctx context.Context, sshPool *ssh.Pool, node, 
 		log.Warnw("failed to add fstab entry", "error", err)
 	}
 
+	// Reload systemd to pick up fstab changes
+	if _, _, err := sshPool.Run(ctx, node, "systemctl daemon-reload"); err != nil {
+		log.Warnw("failed to reload systemd daemon", "error", err)
+	}
+
 	log.Infow("✓ CephFS mounted", "mountPath", mountPath)
 	return nil
 }
