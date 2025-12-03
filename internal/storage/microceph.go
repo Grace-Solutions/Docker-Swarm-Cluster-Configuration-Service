@@ -65,19 +65,12 @@ func (p *MicroCephProvider) Install(ctx context.Context, sshPool *ssh.Pool, node
 		}
 	}
 
-	// Wait for MicroCeph daemon service to be active (up to 30 seconds)
+	// Wait for MicroCeph daemon service to be active (up to 20 seconds)
+	// Use systemctl status which returns immediately with current state
 	log.Infow("waiting for MicroCeph daemon service to start")
-	waitServiceCmd := `for i in $(seq 1 15); do systemctl is-active snap.microceph.daemon.service >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1`
+	waitServiceCmd := `for i in $(seq 1 10); do systemctl status snap.microceph.daemon.service --no-pager 2>/dev/null | grep -q "active (running)" && exit 0; sleep 2; done; exit 1`
 	if _, _, err := sshPool.Run(ctx, node, waitServiceCmd); err != nil {
 		log.Warnw("MicroCeph daemon service may not be active yet (continuing)")
-	}
-
-	// Wait for microceph command to be responsive (up to 60 seconds)
-	// After snap install, the daemon needs time to initialize its control socket
-	log.Infow("waiting for MicroCeph daemon to be ready")
-	waitReadyCmd := `for i in $(seq 1 30); do microceph status >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1`
-	if _, _, err := sshPool.Run(ctx, node, waitReadyCmd); err != nil {
-		log.Warnw("MicroCeph daemon may not be fully ready yet (will retry during bootstrap)")
 	}
 
 	log.Infow("✓ MicroCeph installed", "channel", channel, "updatesEnabled", mcCfg.EnableUpdates)
@@ -88,12 +81,12 @@ func (p *MicroCephProvider) Install(ctx context.Context, sshPool *ssh.Pool, node
 func (p *MicroCephProvider) Bootstrap(ctx context.Context, sshPool *ssh.Pool, primaryNode string) error {
 	log := logging.L().With("component", "microceph", "node", primaryNode)
 
-	// Wait for MicroCeph daemon to be ready before bootstrapping
-	// The daemon needs time to initialize after snap install
-	log.Infow("waiting for MicroCeph daemon to be ready")
-	waitCmd := `for i in $(seq 1 30); do microceph status >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1`
-	if _, stderr, err := sshPool.Run(ctx, primaryNode, waitCmd); err != nil {
-		log.Warnw("MicroCeph daemon may not be fully ready, attempting bootstrap anyway", "stderr", stderr)
+	// Verify MicroCeph daemon is running before bootstrapping
+	log.Infow("verifying MicroCeph daemon is running")
+	statusCmd := `systemctl status snap.microceph.daemon.service --no-pager 2>/dev/null | grep -q "active (running)" && echo "running" || echo "not running"`
+	stdout, _, _ := sshPool.Run(ctx, primaryNode, statusCmd)
+	if !strings.Contains(stdout, "running") || strings.Contains(stdout, "not running") {
+		log.Warnw("MicroCeph daemon may not be fully ready, attempting bootstrap anyway")
 	}
 
 	// Bootstrap the cluster with retry logic
@@ -275,9 +268,10 @@ func (p *MicroCephProvider) Join(ctx context.Context, sshPool *ssh.Pool, node, t
 		return fmt.Errorf("no join token and node not in cluster")
 	}
 
-	// Wait for MicroCeph daemon to be ready on joining node
-	waitCmd := `for i in $(seq 1 30); do microceph status >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1`
-	if _, _, err := sshPool.Run(ctx, node, waitCmd); err != nil {
+	// Verify MicroCeph daemon is running on joining node
+	statusCmd := `systemctl status snap.microceph.daemon.service --no-pager 2>/dev/null | grep -q "active (running)" && echo "running" || echo "not running"`
+	stdout, _, _ := sshPool.Run(ctx, node, statusCmd)
+	if !strings.Contains(stdout, "running") || strings.Contains(stdout, "not running") {
 		log.Warnw("MicroCeph daemon may not be fully ready on joining node")
 	}
 

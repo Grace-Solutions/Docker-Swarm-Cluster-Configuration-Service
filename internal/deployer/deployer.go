@@ -1727,6 +1727,17 @@ func teardownDistributedStorage(ctx context.Context, sshPool *ssh.Pool, nodes []
 		return nil
 	}
 
+	// Build node info map for formatted logging
+	nodeInfoMap := buildStorageNodeInfoMap(cfg)
+
+	// Helper to format node messages
+	fmtNode := func(prefix, node, message string) string {
+		if info, ok := nodeInfoMap[node]; ok {
+			return logging.FormatNodeMessage(prefix, info.Hostname, info.NewHostname, info.Role, message)
+		}
+		return logging.FormatNodeMessage(prefix, node, "", "", message)
+	}
+
 	// Create the storage provider
 	provider, err := storage.NewProvider(cfg)
 	if err != nil {
@@ -1741,21 +1752,21 @@ func teardownDistributedStorage(ctx context.Context, sshPool *ssh.Pool, nodes []
 
 	var lastErr error
 	for _, node := range nodes {
-		log.Infow("→ cleaning up storage on node", "node", node)
+		log.Infow(fmtNode("→", node, "cleaning up storage"))
 
 		// Unmount storage
 		if err := provider.Unmount(ctx, sshPool, node); err != nil {
-			log.Warnw("failed to unmount storage", "node", node, "error", err)
+			log.Warnw(fmtNode("⚠", node, fmt.Sprintf("failed to unmount storage: %v", err)))
 			lastErr = err
 		}
 
 		// Teardown the provider
 		if err := provider.Teardown(ctx, sshPool, node); err != nil {
-			log.Warnw("failed to teardown storage", "node", node, "error", err)
+			log.Warnw(fmtNode("⚠", node, fmt.Sprintf("failed to teardown storage: %v", err)))
 			lastErr = err
 		}
 
-		log.Infow("✓ node cleanup complete", "node", node)
+		log.Infow(fmtNode("✓", node, "cleanup complete"))
 	}
 
 	log.Infow("✓ distributed storage teardown complete")
@@ -1767,6 +1778,17 @@ func basicStorageTeardown(ctx context.Context, sshPool *ssh.Pool, nodes []string
 	ds := cfg.GetDistributedStorage()
 	log := logging.L().With("component", "storage-teardown-basic")
 
+	// Build node info map for formatted logging
+	nodeInfoMap := buildStorageNodeInfoMap(cfg)
+
+	// Helper to format node messages
+	fmtNode := func(prefix, node, message string) string {
+		if info, ok := nodeInfoMap[node]; ok {
+			return logging.FormatNodeMessage(prefix, info.Hostname, info.NewHostname, info.Role, message)
+		}
+		return logging.FormatNodeMessage(prefix, node, "", "", message)
+	}
+
 	// Get mount path from provider config
 	mountPath := ds.Providers.MicroCeph.MountPath
 	if mountPath == "" {
@@ -1774,7 +1796,7 @@ func basicStorageTeardown(ctx context.Context, sshPool *ssh.Pool, nodes []string
 	}
 
 	for _, node := range nodes {
-		log.Infow("→ basic cleanup on node", "node", node)
+		log.Infow(fmtNode("→", node, "basic cleanup"))
 
 		// Unmount storage
 		unmountCmd := fmt.Sprintf("umount -f %s 2>/dev/null || umount -l %s 2>/dev/null || true",
@@ -1796,7 +1818,7 @@ func basicStorageTeardown(ctx context.Context, sshPool *ssh.Pool, nodes []string
 			_, _, _ = sshPool.Run(ctx, node, cmd)
 		}
 
-		log.Infow("✓ basic cleanup complete", "node", node)
+		log.Infow(fmtNode("✓", node, "basic cleanup complete"))
 	}
 
 	return nil
@@ -1804,15 +1826,26 @@ func basicStorageTeardown(ctx context.Context, sshPool *ssh.Pool, nodes []string
 
 // verifyStorageTeardown checks if storage has been fully removed from a node.
 func verifyStorageTeardown(ctx context.Context, sshPool *ssh.Pool, node string, cfg *config.Config) bool {
-	log := logging.L().With("component", "storage-verify", "node", node)
 	ds := cfg.GetDistributedStorage()
+	log := logging.L().With("component", "storage-verify")
 	allClean := true
+
+	// Build node info map for formatted logging
+	nodeInfoMap := buildStorageNodeInfoMap(cfg)
+
+	// Helper to format node messages
+	fmtNode := func(prefix, message string) string {
+		if info, ok := nodeInfoMap[node]; ok {
+			return logging.FormatNodeMessage(prefix, info.Hostname, info.NewHostname, info.Role, message)
+		}
+		return logging.FormatNodeMessage(prefix, node, "", "", message)
+	}
 
 	// Check 1: MicroCeph snap should not be installed
 	snapCheck := "snap list microceph 2>/dev/null"
 	stdout, _, _ := sshPool.Run(ctx, node, snapCheck)
 	if strings.Contains(stdout, "microceph") {
-		log.Warnw("MicroCeph snap still installed", "output", strings.TrimSpace(stdout))
+		log.Warnw(fmtNode("⚠", "MicroCeph snap still installed"))
 		allClean = false
 	}
 
@@ -1821,7 +1854,7 @@ func verifyStorageTeardown(ctx context.Context, sshPool *ssh.Pool, node string, 
 	procCheck := "pgrep -la ceph 2>/dev/null | grep -v '\\[kworker' || true"
 	stdout, _, _ = sshPool.Run(ctx, node, procCheck)
 	if strings.TrimSpace(stdout) != "" {
-		log.Warnw("Ceph processes still running", "output", strings.TrimSpace(stdout))
+		log.Warnw(fmtNode("⚠", "Ceph processes still running"))
 		allClean = false
 	}
 
@@ -1833,7 +1866,7 @@ func verifyStorageTeardown(ctx context.Context, sshPool *ssh.Pool, node string, 
 	mountCheck := fmt.Sprintf("mountpoint -q %s 2>/dev/null && echo 'mounted' || echo 'not mounted'", mountPath)
 	stdout, _, _ = sshPool.Run(ctx, node, mountCheck)
 	if strings.Contains(stdout, "mounted") && !strings.Contains(stdout, "not mounted") {
-		log.Warnw("Mount path still mounted", "path", mountPath)
+		log.Warnw(fmtNode("⚠", fmt.Sprintf("mount path still mounted: %s", mountPath)))
 		allClean = false
 	}
 
@@ -1841,12 +1874,12 @@ func verifyStorageTeardown(ctx context.Context, sshPool *ssh.Pool, node string, 
 	dirCheck := "test -d /var/snap/microceph && echo 'exists' || echo 'clean'"
 	stdout, _, _ = sshPool.Run(ctx, node, dirCheck)
 	if strings.Contains(stdout, "exists") {
-		log.Warnw("/var/snap/microceph directory still exists")
+		log.Warnw(fmtNode("⚠", "/var/snap/microceph directory still exists"))
 		allClean = false
 	}
 
 	if allClean {
-		log.Infow("✓ Node verified clean")
+		log.Infow(fmtNode("✓", "verified clean"))
 	}
 
 	return allClean
