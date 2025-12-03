@@ -166,3 +166,26 @@ func Sync() {
 	logger.file = nil
 }
 
+// FormatNodeMessage formats a log message with node identifier.
+// Format: "prefix [hostname - [newHostname] - role] message"
+// If newHostname is blank: "prefix [hostname - role] message"
+// If role is blank: "prefix [hostname - [newHostname]] message"
+// If both blank: "prefix [hostname] message"
+// Example: FormatNodeMessage("→", "192.168.1.1", "node1", "manager", "installing Docker")
+//
+//	-> "→ [192.168.1.1 - [node1] - manager] installing Docker"
+func FormatNodeMessage(prefix, hostname, newHostname, role, message string) string {
+	parts := []string{hostname}
+
+	if newHostname != "" {
+		parts = append(parts, fmt.Sprintf("[%s]", newHostname))
+	}
+
+	if role != "" {
+		parts = append(parts, role)
+	}
+
+	identifier := strings.Join(parts, " - ")
+	return fmt.Sprintf("%s [%s] %s", prefix, identifier, message)
+}
+

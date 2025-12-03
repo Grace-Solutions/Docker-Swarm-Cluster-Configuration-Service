@@ -68,8 +68,19 @@ type MicroCephProviderConfig struct {
 	EnableRadosGateway bool `json:"enableRadosGateway"`
 
 	// RadosGatewayPort is the port for the RADOS Gateway service when EnableRadosGateway is true.
-	// Default: 8080
+	// Default: 7480
 	RadosGatewayPort int `json:"radosGatewayPort"`
+
+	// S3BucketName is the name of the S3 bucket to create when EnableRadosGateway is true.
+	// If empty, no bucket is created.
+	// Default: "" (no bucket created)
+	S3BucketName string `json:"s3BucketName"`
+
+	// S3CredentialsFile is the path to write S3 credentials after RGW is enabled.
+	// The file will contain access_key, secret_key, endpoint, and bucket name.
+	// If empty, credentials are only logged to console.
+	// Default: "" (no file written)
+	S3CredentialsFile string `json:"s3CredentialsFile"`
 }
 
 // StorageProviders contains provider-specific configurations.
@@ -326,7 +337,7 @@ func (c *Config) ApplyDefaults() {
 	// LoopDeviceThinProvision defaults to true (set explicitly since zero value is false)
 	// This is handled by checking if the struct was unmarshaled with the field set
 	if mc.RadosGatewayPort == 0 {
-		mc.RadosGatewayPort = 8080
+		mc.RadosGatewayPort = 7480
 	}
 
 	// Node defaults

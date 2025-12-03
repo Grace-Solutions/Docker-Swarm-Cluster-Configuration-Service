@@ -749,3 +749,80 @@ func parseRadosGWUserKeys(jsonOutput string) (accessKey, secretKey string, err e
 
 	return user.Keys[0].AccessKey, user.Keys[0].SecretKey, nil
 }
+
+// CreateS3Bucket creates an S3 bucket using radosgw-admin.
+func (p *MicroCephProvider) CreateS3Bucket(ctx context.Context, sshPool *ssh.Pool, primaryOSD string, bucketName string) error {
+	log := logging.L().With("component", "microceph-s3", "node", primaryOSD, "bucket", bucketName)
+
+	if bucketName == "" {
+		return fmt.Errorf("bucket name is required")
+	}
+
+	// Get the S3 user credentials first
+	userID := "clusterctl-s3-user"
+	getUserCmd := fmt.Sprintf("radosgw-admin user info --uid=%s", userID)
+	stdout, stderr, err := sshPool.Run(ctx, primaryOSD, getUserCmd)
+	if err != nil {
+		return fmt.Errorf("failed to get S3 user info: %w (stderr: %s)", err, stderr)
+	}
+
+	accessKey, secretKey, err := parseRadosGWUserKeys(stdout)
+	if err != nil {
+		return fmt.Errorf("failed to parse S3 credentials: %w", err)
+	}
+
+	// Check if bucket already exists
+	listBucketsCmd := fmt.Sprintf("radosgw-admin bucket list --uid=%s", userID)
+	stdout, _, _ = sshPool.Run(ctx, primaryOSD, listBucketsCmd)
+	if strings.Contains(stdout, bucketName) {
+		log.Infow("bucket already exists, skipping creation")
+		return nil
+	}
+
+	// Create the bucket using s3cmd or aws cli
+	// First, try to install s3cmd if not present
+	installCmd := "which s3cmd || apt-get update -qq && apt-get install -y -qq s3cmd"
+	if _, stderr, err := sshPool.Run(ctx, primaryOSD, installCmd); err != nil {
+		log.Warnw("failed to install s3cmd, trying with radosgw-admin", "stderr", stderr)
+	}
+
+	// Configure s3cmd with credentials
+	s3cfgContent := fmt.Sprintf(`[default]
+access_key = %s
+secret_key = %s
+host_base = 127.0.0.1:7480
+host_bucket = 127.0.0.1:7480/%%(bucket)s
+use_https = False
+signature_v2 = True
+`, accessKey, secretKey)
+
+	configureCmd := fmt.Sprintf("cat > /tmp/.s3cfg << 'EOF'\n%sEOF", s3cfgContent)
+	if _, stderr, err := sshPool.Run(ctx, primaryOSD, configureCmd); err != nil {
+		return fmt.Errorf("failed to configure s3cmd: %w (stderr: %s)", err, stderr)
+	}
+
+	// Create the bucket using s3cmd
+	createBucketCmd := fmt.Sprintf("s3cmd -c /tmp/.s3cfg mb s3://%s 2>&1 || true", bucketName)
+	log.Infow("creating S3 bucket", "command", fmt.Sprintf("s3cmd mb s3://%s", bucketName))
+	stdout, stderr, err = sshPool.Run(ctx, primaryOSD, createBucketCmd)
+	if err != nil && !strings.Contains(stdout, "already") && !strings.Contains(stderr, "already") {
+		// Try alternative method using radosgw-admin
+		log.Warnw("s3cmd failed, trying radosgw-admin bucket link", "error", err)
+		// Create bucket via radosgw-admin (requires bucket to be touched first)
+		touchCmd := fmt.Sprintf("radosgw-admin bucket link --bucket=%s --uid=%s 2>/dev/null || true", bucketName, userID)
+		sshPool.Run(ctx, primaryOSD, touchCmd)
+	}
+
+	// Verify bucket was created
+	verifyCmd := fmt.Sprintf("s3cmd -c /tmp/.s3cfg ls s3://%s 2>&1 || radosgw-admin bucket stats --bucket=%s 2>&1", bucketName, bucketName)
+	stdout, stderr, err = sshPool.Run(ctx, primaryOSD, verifyCmd)
+	if err != nil && !strings.Contains(stdout, bucketName) {
+		return fmt.Errorf("failed to verify bucket creation: %w (stdout: %s, stderr: %s)", err, stdout, stderr)
+	}
+
+	// Clean up temp config
+	sshPool.Run(ctx, primaryOSD, "rm -f /tmp/.s3cfg")
+
+	log.Infow("✓ S3 bucket created successfully")
+	return nil
+}

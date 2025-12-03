@@ -20,26 +20,9 @@ import (
 	"clusterctl/internal/swarm"
 )
 
-// formatNodeMessage formats a log message with node identifier.
-// Format: "prefix [hostname - [newHostname] - role] message"
-// If newHostname is blank: "prefix [hostname - role] message"
-// If role is blank: "prefix [hostname - [newHostname]] message"
-// If both blank: "prefix [hostname] message"
-// Example: formatNodeMessage("→", "192.168.1.1", "node1", "manager", "installing Docker")
-//   -> "→ [192.168.1.1 - [node1] - manager] installing Docker"
+// formatNodeMessage is a convenience wrapper around logging.FormatNodeMessage.
 func formatNodeMessage(prefix, hostname, newHostname, role, message string) string {
-	parts := []string{hostname}
-
-	if newHostname != "" {
-		parts = append(parts, fmt.Sprintf("[%s]", newHostname))
-	}
-
-	if role != "" {
-		parts = append(parts, role)
-	}
-
-	identifier := strings.Join(parts, " - ")
-	return fmt.Sprintf("%s [%s] %s", prefix, identifier, message)
+	return logging.FormatNodeMessage(prefix, hostname, newHostname, role, message)
 }
 
 // Deploy orchestrates the complete cluster deployment from the configuration.
@@ -1700,6 +1683,9 @@ func setupDistributedStorage(ctx context.Context, sshPool *ssh.Pool, managers []
 		return fmt.Errorf("failed to create storage provider: %w", err)
 	}
 
+	// Build node info map for formatted logging
+	nodeInfoMap := buildStorageNodeInfoMap(cfg)
+
 	log.Infow("setting up distributed storage cluster",
 		"provider", provider.Name(),
 		"managers", len(managers),
@@ -1708,11 +1694,28 @@ func setupDistributedStorage(ctx context.Context, sshPool *ssh.Pool, managers []
 		"mountPath", provider.GetMountPath())
 
 	// Use the storage framework to set up the cluster
-	if err := storage.SetupCluster(ctx, sshPool, provider, managers, workers, cfg); err != nil {
+	if err := storage.SetupCluster(ctx, sshPool, provider, managers, workers, cfg, nodeInfoMap); err != nil {
 		return fmt.Errorf("storage cluster setup failed: %w", err)
 	}
 
 	return nil
+}
+
+// buildStorageNodeInfoMap creates a map of hostname to NodeInfo for storage logging.
+func buildStorageNodeInfoMap(cfg *config.Config) map[string]storage.NodeInfo {
+	nodeInfoMap := make(map[string]storage.NodeInfo)
+	for i := range cfg.Nodes {
+		node := &cfg.Nodes[i]
+		if !node.IsEnabled() || !node.StorageEnabled {
+			continue
+		}
+		nodeInfoMap[node.Hostname] = storage.NodeInfo{
+			Hostname:    node.Hostname,
+			NewHostname: node.NewHostname,
+			Role:        node.Role,
+		}
+	}
+	return nodeInfoMap
 }
 
 // teardownDistributedStorage tears down an existing distributed storage cluster using the provider framework.

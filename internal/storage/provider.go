@@ -3,7 +3,9 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"clusterctl/internal/config"
@@ -57,6 +59,10 @@ type Provider interface {
 	// overlayProvider is used for hostname precedence: overlay hostname > overlay IP > private hostname > private IP.
 	// Returns the S3 endpoint URL and credentials.
 	EnableRadosGateway(ctx context.Context, sshPool *ssh.Pool, osdNodes []string, port int, overlayProvider string) (*RadosGatewayInfo, error)
+
+	// CreateS3Bucket creates an S3 bucket using the RADOS Gateway.
+	// Returns nil if bucket already exists.
+	CreateS3Bucket(ctx context.Context, sshPool *ssh.Pool, primaryOSD string, bucketName string) error
 }
 
 // RadosGatewayInfo contains the S3 endpoint and credentials for RADOS Gateway.
@@ -65,15 +71,16 @@ type RadosGatewayInfo struct {
 	AccessKey  string
 	SecretKey  string
 	UserID     string
+	BucketName string // Name of the created bucket (if any)
 }
 
 // ClusterStatus represents the status of a storage cluster.
 type ClusterStatus struct {
-	Healthy     bool
-	NodeCount   int
-	StorageUsed int64
+	Healthy      bool
+	NodeCount    int
+	StorageUsed  int64
 	StorageTotal int64
-	Nodes       []NodeStatus
+	Nodes        []NodeStatus
 }
 
 // NodeStatus represents the status of a storage node.
@@ -81,6 +88,13 @@ type NodeStatus struct {
 	Name    string
 	Healthy bool
 	Role    string
+}
+
+// NodeInfo contains node metadata for formatted logging.
+type NodeInfo struct {
+	Hostname    string // SSH hostname/IP
+	NewHostname string // Friendly hostname (if set)
+	Role        string // "manager" or "worker"
 }
 
 // NewProvider creates a new storage provider based on the configuration.
@@ -105,7 +119,8 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 // SetupCluster orchestrates the complete storage cluster setup.
 // managers are MON nodes (cluster brain/quorum), workers are OSD nodes (data storage).
 // All nodes participate in the cluster, but only workers get OSDs added.
-func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, managers []string, workers []string, cfg *config.Config) error {
+// nodeInfoMap provides node metadata for formatted logging (optional, can be nil).
+func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, managers []string, workers []string, cfg *config.Config, nodeInfoMap map[string]NodeInfo) error {
 	log := logging.L().With("component", "storage-setup", "provider", provider.Name())
 	ds := cfg.GetDistributedStorage()
 	mountPath := provider.GetMountPath()
@@ -117,6 +132,16 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 
 	if len(managers) == 0 {
 		return fmt.Errorf("at least one manager (MON) node is required")
+	}
+
+	// Helper to format node messages
+	fmtNode := func(prefix, node, message string) string {
+		if nodeInfoMap != nil {
+			if info, ok := nodeInfoMap[node]; ok {
+				return logging.FormatNodeMessage(prefix, info.Hostname, info.NewHostname, info.Role, message)
+			}
+		}
+		return logging.FormatNodeMessage(prefix, node, "", "", message)
 	}
 
 	log.Infow("setting up distributed storage cluster",
@@ -131,26 +156,26 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 	// Step 1: Install storage software on all nodes
 	log.Infow("→ Step 1: Installing storage software on all nodes")
 	for _, node := range allNodes {
-		log.Infow("→ installing on node", "node", node)
+		log.Infow(fmtNode("→", node, "installing MicroCeph"))
 		if err := provider.Install(ctx, sshPool, node); err != nil {
 			return fmt.Errorf("failed to install storage on %s: %w", node, err)
 		}
-		log.Infow("✓ storage software installed", "node", node)
+		log.Infow(fmtNode("✓", node, "MicroCeph installed"))
 	}
 
 	// Step 2: Bootstrap the primary manager node (first MON)
-	log.Infow("→ Step 2: Bootstrapping primary MON node", "node", primaryNode)
+	log.Infow(fmtNode("→", primaryNode, "bootstrapping primary MON node"))
 	if err := provider.Bootstrap(ctx, sshPool, primaryNode); err != nil {
 		return fmt.Errorf("failed to bootstrap primary node %s: %w", primaryNode, err)
 	}
-	log.Infow("✓ primary MON node bootstrapped", "node", primaryNode)
+	log.Infow(fmtNode("✓", primaryNode, "primary MON node bootstrapped"))
 
 	// Step 3: Join additional manager nodes (MONs for quorum)
 	if len(managers) > 1 {
 		log.Infow("→ Step 3: Joining additional MON nodes", "count", len(managers)-1)
 		for i := 1; i < len(managers); i++ {
 			node := managers[i]
-			log.Infow("→ joining MON node to cluster", "node", node, "index", i+1, "total", len(managers))
+			log.Infow(fmtNode("→", node, fmt.Sprintf("joining MON node to cluster (%d/%d)", i+1, len(managers))))
 
 			token, err := provider.GenerateJoinToken(ctx, sshPool, primaryNode, node)
 			if err != nil {
@@ -160,7 +185,7 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 			if err := provider.Join(ctx, sshPool, node, token); err != nil {
 				return fmt.Errorf("failed to join MON node %s to cluster: %w", node, err)
 			}
-			log.Infow("✓ MON node joined cluster", "node", node)
+			log.Infow(fmtNode("✓", node, "MON node joined cluster"))
 		}
 	}
 
@@ -168,7 +193,7 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 	if len(workers) > 0 {
 		log.Infow("→ Step 4: Joining OSD nodes", "count", len(workers))
 		for i, node := range workers {
-			log.Infow("→ joining OSD node to cluster", "node", node, "index", i+1, "total", len(workers))
+			log.Infow(fmtNode("→", node, fmt.Sprintf("joining OSD node to cluster (%d/%d)", i+1, len(workers))))
 
 			token, err := provider.GenerateJoinToken(ctx, sshPool, primaryNode, node)
 			if err != nil {
@@ -178,7 +203,7 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 			if err := provider.Join(ctx, sshPool, node, token); err != nil {
 				return fmt.Errorf("failed to join OSD node %s to cluster: %w", node, err)
 			}
-			log.Infow("✓ OSD node joined cluster", "node", node)
+			log.Infow(fmtNode("✓", node, "OSD node joined cluster"))
 		}
 	}
 
@@ -186,11 +211,11 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 	if len(workers) > 0 {
 		log.Infow("→ Step 5: Adding storage to OSD nodes", "count", len(workers))
 		for _, node := range workers {
-			log.Infow("→ adding storage to OSD node", "node", node)
+			log.Infow(fmtNode("→", node, "adding storage"))
 			if err := provider.AddStorage(ctx, sshPool, node); err != nil {
 				return fmt.Errorf("failed to add storage on %s: %w", node, err)
 			}
-			log.Infow("✓ storage added", "node", node)
+			log.Infow(fmtNode("✓", node, "storage added"))
 		}
 	} else {
 		log.Warnw("no worker nodes configured for OSD storage")
@@ -206,11 +231,11 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 	// Step 7: Mount storage on all nodes
 	log.Infow("→ Step 7: Mounting storage on all nodes", "mountPath", mountPath)
 	for _, node := range allNodes {
-		log.Infow("→ mounting storage on node", "node", node)
+		log.Infow(fmtNode("→", node, "mounting storage"))
 		if err := provider.Mount(ctx, sshPool, node, ds.PoolName); err != nil {
 			return fmt.Errorf("failed to mount storage on %s: %w", node, err)
 		}
-		log.Infow("✓ storage mounted", "node", node)
+		log.Infow(fmtNode("✓", node, "storage mounted"))
 	}
 
 	// Step 8: Enable RADOS Gateway (S3) on OSD nodes if configured
@@ -222,10 +247,31 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 		if err != nil {
 			return fmt.Errorf("failed to enable RADOS Gateway: %w", err)
 		}
+
+		// Step 8a: Create S3 bucket if configured
+		if mcCfg.S3BucketName != "" {
+			log.Infow("→ Step 8a: Creating S3 bucket", "bucket", mcCfg.S3BucketName)
+			if err := provider.CreateS3Bucket(ctx, sshPool, workers[0], mcCfg.S3BucketName); err != nil {
+				return fmt.Errorf("failed to create S3 bucket: %w", err)
+			}
+			rgwInfo.BucketName = mcCfg.S3BucketName
+			log.Infow("✓ S3 bucket created", "bucket", mcCfg.S3BucketName)
+		}
+
+		// Step 8b: Write S3 credentials file if configured
+		if mcCfg.S3CredentialsFile != "" {
+			log.Infow("→ Step 8b: Writing S3 credentials file", "path", mcCfg.S3CredentialsFile)
+			if err := writeS3CredentialsFile(mcCfg.S3CredentialsFile, rgwInfo); err != nil {
+				return fmt.Errorf("failed to write S3 credentials file: %w", err)
+			}
+			log.Infow("✓ S3 credentials written", "path", mcCfg.S3CredentialsFile)
+		}
+
 		log.Infow("✓ RADOS Gateway (S3) enabled",
 			"endpoints", rgwInfo.Endpoints,
 			"userId", rgwInfo.UserID,
-			"accessKey", rgwInfo.AccessKey)
+			"accessKey", rgwInfo.AccessKey,
+			"bucket", rgwInfo.BucketName)
 	} else if mcCfg.EnableRadosGateway && len(workers) == 0 {
 		log.Warnw("RADOS Gateway enabled but no OSD workers available - skipping")
 	}
@@ -234,6 +280,37 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 		"managers", len(managers),
 		"workers", len(workers),
 		"mountPath", mountPath)
+	return nil
+}
+
+// S3Credentials represents the S3 credentials file format.
+type S3Credentials struct {
+	Endpoints  []string `json:"endpoints"`
+	AccessKey  string   `json:"accessKey"`
+	SecretKey  string   `json:"secretKey"`
+	UserID     string   `json:"userId"`
+	BucketName string   `json:"bucketName,omitempty"`
+}
+
+// writeS3CredentialsFile writes S3 credentials to a JSON file.
+func writeS3CredentialsFile(path string, info *RadosGatewayInfo) error {
+	creds := S3Credentials{
+		Endpoints:  info.Endpoints,
+		AccessKey:  info.AccessKey,
+		SecretKey:  info.SecretKey,
+		UserID:     info.UserID,
+		BucketName: info.BucketName,
+	}
+
+	data, err := json.MarshalIndent(creds, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal credentials: %w", err)
+	}
+
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("failed to write credentials file: %w", err)
+	}
+
 	return nil
 }
 
