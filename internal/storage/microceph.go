@@ -501,20 +501,25 @@ func (p *MicroCephProvider) CreatePool(ctx context.Context, sshPool *ssh.Pool, p
 	return nil
 }
 
-// Mount mounts the CephFS filesystem on a node.
-func (p *MicroCephProvider) Mount(ctx context.Context, sshPool *ssh.Pool, node, poolName string) error {
-	mountPath := p.GetMountPath()
-	log := logging.L().With("component", "microceph", "node", node, "mountPath", mountPath)
+// GetClusterCredentials retrieves the admin key and monitor addresses from the primary node.
+// These credentials can be distributed to other nodes for mounting.
+func (p *MicroCephProvider) GetClusterCredentials(ctx context.Context, sshPool *ssh.Pool, primaryNode string) (*ClusterCredentials, error) {
+	log := logging.L().With("component", "microceph", "node", primaryNode)
 
-	// Create mount directory
-	mkdirCmd := fmt.Sprintf("mkdir -p %s", mountPath)
-	if _, _, err := sshPool.Run(ctx, node, mkdirCmd); err != nil {
-		return fmt.Errorf("failed to create mount directory: %w", err)
+	// Get admin key
+	keyCmd := "ceph auth get-key client.admin 2>/dev/null"
+	adminKey, stderr, err := sshPool.Run(ctx, primaryNode, keyCmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get admin key: %w (stderr: %s)", err, stderr)
+	}
+	adminKey = strings.TrimSpace(adminKey)
+	if adminKey == "" {
+		return nil, fmt.Errorf("empty admin key returned")
 	}
 
 	// Get the monitor addresses
 	monCmd := "ceph mon dump --format=json 2>/dev/null | jq -r '.mons[].addr' | cut -d'/' -f1 | paste -sd','"
-	monAddrs, _, err := sshPool.Run(ctx, node, monCmd)
+	monAddrs, _, err := sshPool.Run(ctx, primaryNode, monCmd)
 	if err != nil {
 		// Fallback to localhost
 		monAddrs = "127.0.0.1:6789"
@@ -524,25 +529,40 @@ func (p *MicroCephProvider) Mount(ctx context.Context, sshPool *ssh.Pool, node, 
 		monAddrs = "127.0.0.1:6789"
 	}
 
-	// Get admin key
-	keyCmd := "ceph auth get-key client.admin 2>/dev/null"
-	adminKey, _, err := sshPool.Run(ctx, node, keyCmd)
-	if err != nil {
-		return fmt.Errorf("failed to get admin key: %w", err)
-	}
-	adminKey = strings.TrimSpace(adminKey)
+	log.Infow("retrieved cluster credentials", "monAddrs", monAddrs, "adminKeyLen", len(adminKey))
+	return &ClusterCredentials{
+		AdminKey: adminKey,
+		MonAddrs: monAddrs,
+	}, nil
+}
 
-	// Mount CephFS
+// MountWithCredentials mounts CephFS on a node using pre-fetched credentials.
+// This is more efficient than Mount() when mounting multiple nodes.
+func (p *MicroCephProvider) MountWithCredentials(ctx context.Context, sshPool *ssh.Pool, node, poolName string, creds *ClusterCredentials) error {
+	mountPath := p.GetMountPath()
+	log := logging.L().With("component", "microceph", "node", node, "mountPath", mountPath)
+
+	if creds == nil {
+		return fmt.Errorf("cluster credentials required")
+	}
+
+	// Create mount directory
+	mkdirCmd := fmt.Sprintf("mkdir -p %s", mountPath)
+	if _, _, err := sshPool.Run(ctx, node, mkdirCmd); err != nil {
+		return fmt.Errorf("failed to create mount directory: %w", err)
+	}
+
+	// Mount CephFS using provided credentials
 	mountCmd := fmt.Sprintf("mount -t ceph %s:/ %s -o name=admin,secret=%s,fs=%s",
-		monAddrs, mountPath, adminKey, poolName)
-	log.Infow("mounting CephFS", "command", fmt.Sprintf("mount -t ceph %s:/ %s -o name=admin,secret=<hidden>,fs=%s", monAddrs, mountPath, poolName))
+		creds.MonAddrs, mountPath, creds.AdminKey, poolName)
+	log.Infow("mounting CephFS", "monAddrs", creds.MonAddrs, "fs", poolName)
 	if _, stderr, err := sshPool.Run(ctx, node, mountCmd); err != nil {
 		return fmt.Errorf("failed to mount CephFS: %w (stderr: %s)", err, stderr)
 	}
 
 	// Add to fstab for persistence
 	fstabEntry := fmt.Sprintf("%s:/ %s ceph name=admin,secret=%s,fs=%s,_netdev 0 0",
-		monAddrs, mountPath, adminKey, poolName)
+		creds.MonAddrs, mountPath, creds.AdminKey, poolName)
 	fstabCmd := fmt.Sprintf("grep -q '%s' /etc/fstab || echo '%s' >> /etc/fstab", mountPath, fstabEntry)
 	if _, _, err := sshPool.Run(ctx, node, fstabCmd); err != nil {
 		log.Warnw("failed to add fstab entry", "error", err)
@@ -555,6 +575,17 @@ func (p *MicroCephProvider) Mount(ctx context.Context, sshPool *ssh.Pool, node, 
 
 	log.Infow("✓ CephFS mounted", "mountPath", mountPath)
 	return nil
+}
+
+// Mount mounts the CephFS filesystem on a node (fetches credentials from node itself).
+// Prefer MountWithCredentials when mounting multiple nodes.
+func (p *MicroCephProvider) Mount(ctx context.Context, sshPool *ssh.Pool, node, poolName string) error {
+	// Get credentials from this node and mount
+	creds, err := p.GetClusterCredentials(ctx, sshPool, node)
+	if err != nil {
+		return fmt.Errorf("failed to get cluster credentials: %w", err)
+	}
+	return p.MountWithCredentials(ctx, sshPool, node, poolName, creds)
 }
 
 // Unmount unmounts the CephFS filesystem from a node.

@@ -43,8 +43,16 @@ type Provider interface {
 	// CreatePool creates a storage pool/filesystem for use by containers.
 	CreatePool(ctx context.Context, sshPool *ssh.Pool, primaryNode, poolName string) error
 
-	// Mount mounts the storage filesystem on a node.
+	// GetClusterCredentials retrieves cluster credentials (admin key, mon addresses) from the primary node.
+	// These credentials can be distributed to other nodes for mounting.
+	GetClusterCredentials(ctx context.Context, sshPool *ssh.Pool, primaryNode string) (*ClusterCredentials, error)
+
+	// Mount mounts the storage filesystem on a node (fetches credentials from node itself).
 	Mount(ctx context.Context, sshPool *ssh.Pool, node, poolName string) error
+
+	// MountWithCredentials mounts the storage filesystem using pre-fetched credentials.
+	// This is more efficient when mounting multiple nodes as credentials are fetched once.
+	MountWithCredentials(ctx context.Context, sshPool *ssh.Pool, node, poolName string, creds *ClusterCredentials) error
 
 	// Unmount unmounts the storage filesystem from a node.
 	Unmount(ctx context.Context, sshPool *ssh.Pool, node string) error
@@ -72,6 +80,13 @@ type RadosGatewayInfo struct {
 	SecretKey  string
 	UserID     string
 	BucketName string // Name of the created bucket (if any)
+}
+
+// ClusterCredentials contains the credentials needed to mount the storage filesystem.
+// These are retrieved once from the primary node and distributed to all nodes.
+type ClusterCredentials struct {
+	AdminKey string // Ceph admin key for authentication
+	MonAddrs string // Comma-separated list of monitor addresses
 }
 
 // ClusterStatus represents the status of a storage cluster.
@@ -261,7 +276,9 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 		}
 	}
 
-	// Step 5: Add storage (disks) to eligible nodes
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	// PHASE 4: Add Storage to OSD Nodes
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	// - Workers always get storage (they are OSD nodes)
 	// - Managers with role "both"/"all"/"" also get storage
 	// - Pure managers (role=manager) do NOT get storage (MON only)
@@ -273,9 +290,12 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 	}
 
 	if len(storageNodes) > 0 {
-		log.Infow("→ Step 5: Adding storage to OSD-eligible nodes", "count", len(storageNodes))
-		for _, node := range storageNodes {
-			log.Infow(fmtNode("→", node, "adding storage"))
+		log.Infow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		log.Infow("PHASE 4: Add Storage to OSD Nodes", "count", len(storageNodes))
+		log.Infow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+		for i, node := range storageNodes {
+			log.Infow(fmtNode("→", node, fmt.Sprintf("adding storage (%d/%d)", i+1, len(storageNodes))))
 			if err := provider.AddStorage(ctx, sshPool, node); err != nil {
 				return fmt.Errorf("failed to add storage on %s: %w", node, err)
 			}
@@ -285,18 +305,35 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 		log.Warnw("no nodes configured for OSD storage - at least one node needs role=worker, both, all, or empty")
 	}
 
-	// Step 6: Create storage pool/filesystem
-	log.Infow("→ Step 6: Creating storage pool/filesystem", "poolName", ds.PoolName)
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	// PHASE 5: Create Storage Pool and Get Cluster Credentials
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	log.Infow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	log.Infow("PHASE 5: Create Storage Pool", "poolName", ds.PoolName)
+	log.Infow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
 	if err := provider.CreatePool(ctx, sshPool, primaryNode, ds.PoolName); err != nil {
 		return fmt.Errorf("failed to create storage pool: %w", err)
 	}
 	log.Infow("✓ storage pool created", "poolName", ds.PoolName)
 
-	// Step 7: Mount storage on all nodes
-	log.Infow("→ Step 7: Mounting storage on all nodes", "mountPath", mountPath)
-	for _, node := range allNodes {
-		log.Infow(fmtNode("→", node, "mounting storage"))
-		if err := provider.Mount(ctx, sshPool, node, ds.PoolName); err != nil {
+	// Get cluster credentials from primary (admin key, mon addresses) for mounting
+	clusterCreds, err := provider.GetClusterCredentials(ctx, sshPool, primaryNode)
+	if err != nil {
+		return fmt.Errorf("failed to get cluster credentials from primary: %w", err)
+	}
+	log.Infow("✓ cluster credentials retrieved from primary", "monAddrs", clusterCreds.MonAddrs)
+
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	// PHASE 6: Mount Storage on All Nodes
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	log.Infow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	log.Infow("PHASE 6: Mount Storage on All Nodes", "count", len(allNodes), "mountPath", mountPath)
+	log.Infow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+	for i, node := range allNodes {
+		log.Infow(fmtNode("→", node, fmt.Sprintf("mounting storage (%d/%d)", i+1, len(allNodes))))
+		if err := provider.MountWithCredentials(ctx, sshPool, node, ds.PoolName, clusterCreds); err != nil {
 			return fmt.Errorf("failed to mount storage on %s: %w", node, err)
 		}
 		log.Infow(fmtNode("✓", node, "storage mounted"))
