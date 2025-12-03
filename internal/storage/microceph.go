@@ -41,7 +41,7 @@ func (p *MicroCephProvider) Install(ctx context.Context, sshPool *ssh.Pool, node
 	mcCfg := ds.Providers.MicroCeph
 	channel := mcCfg.SnapChannel
 	if channel == "" {
-		channel = "squid/stable"
+		channel = "latest/stable"
 	}
 
 	// Install microceph snap
@@ -76,43 +76,50 @@ func (p *MicroCephProvider) Install(ctx context.Context, sshPool *ssh.Pool, node
 func (p *MicroCephProvider) Bootstrap(ctx context.Context, sshPool *ssh.Pool, primaryNode string) error {
 	log := logging.L().With("component", "microceph", "node", primaryNode)
 
-	// Wait for MicroCeph daemon to be ready before bootstrapping
+	// Wait for MicroCeph daemon to be ready before initializing
 	// The daemon needs time to initialize after snap install
 	log.Infow("waiting for MicroCeph daemon to be ready")
-	waitCmd := `for i in $(seq 1 30); do microceph status >/dev/null 2>&1 && exit 0; echo "waiting for microceph daemon... ($i/30)"; sleep 2; done; exit 1`
+	waitCmd := `for i in $(seq 1 60); do microceph status >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1`
 	if _, stderr, err := sshPool.Run(ctx, primaryNode, waitCmd); err != nil {
-		log.Warnw("MicroCeph daemon may not be fully ready, attempting bootstrap anyway", "stderr", stderr)
+		log.Warnw("MicroCeph daemon may not be fully ready, attempting init anyway", "stderr", stderr)
 	}
 
-	// Bootstrap the cluster with retry logic
+	// Initialize the cluster with retry logic
+	// Use 'microceph init' for latest/stable channel (newer versions)
 	// The control.socket can take time to become responsive
-	bootstrapCmd := "microceph cluster bootstrap"
-	log.Infow("bootstrapping MicroCeph cluster", "command", bootstrapCmd)
+	initCmd := "microceph init"
+	log.Infow("initializing MicroCeph cluster", "command", initCmd)
 
 	var lastErr error
-	for attempt := 1; attempt <= 3; attempt++ {
-		_, stderr, err := sshPool.Run(ctx, primaryNode, bootstrapCmd)
+	for attempt := 1; attempt <= 5; attempt++ {
+		_, stderr, err := sshPool.Run(ctx, primaryNode, initCmd)
 		if err == nil {
 			break
 		}
-		// Check if already bootstrapped
-		if strings.Contains(stderr, "already") || strings.Contains(stderr, "exists") {
-			log.Infow("cluster already bootstrapped, continuing")
+		// Check if already initialized
+		if strings.Contains(stderr, "already") || strings.Contains(stderr, "exists") || strings.Contains(stderr, "initialized") {
+			log.Infow("cluster already initialized, continuing")
 			lastErr = nil
 			break
 		}
 		// Check for context deadline - this means daemon needs more time
 		if strings.Contains(stderr, "context deadline exceeded") || strings.Contains(stderr, "control.socket") {
-			log.Warnw("MicroCeph daemon not ready, retrying", "attempt", attempt, "maxAttempts", 3)
-			time.Sleep(10 * time.Second)
-			lastErr = fmt.Errorf("failed to bootstrap cluster: %w (stderr: %s)", err, stderr)
+			log.Warnw("MicroCeph daemon not ready, retrying", "attempt", attempt, "maxAttempts", 5)
+			time.Sleep(15 * time.Second)
+			lastErr = fmt.Errorf("failed to initialize cluster: %w (stderr: %s)", err, stderr)
 			continue
 		}
-		lastErr = fmt.Errorf("failed to bootstrap cluster: %w (stderr: %s)", err, stderr)
+		lastErr = fmt.Errorf("failed to initialize cluster: %w (stderr: %s)", err, stderr)
 		break
 	}
 	if lastErr != nil {
 		return lastErr
+	}
+
+	// Verify cluster is initialized
+	log.Infow("verifying MicroCeph cluster status")
+	if _, stderr, err := sshPool.Run(ctx, primaryNode, "microceph status"); err != nil {
+		return fmt.Errorf("cluster init succeeded but status check failed: %w (stderr: %s)", err, stderr)
 	}
 
 	// Configure Ceph network CIDR using overlay/private network detection
@@ -209,36 +216,66 @@ func (p *MicroCephProvider) detectNetworkCIDR(ctx context.Context, sshPool *ssh.
 	return ""
 }
 
-// GenerateJoinToken generates a token for a node to join the cluster.
+// GenerateJoinToken adds a node to the cluster and returns a join token.
+// For latest/stable MicroCeph, this uses 'microceph add-node <hostname>'.
 func (p *MicroCephProvider) GenerateJoinToken(ctx context.Context, sshPool *ssh.Pool, primaryNode, joiningNode string) (string, error) {
 	log := logging.L().With("component", "microceph", "primaryNode", primaryNode, "joiningNode", joiningNode)
 
-	// Generate join token using microceph cluster add
-	addCmd := fmt.Sprintf("microceph cluster add %s", joiningNode)
-	log.Infow("generating join token", "command", addCmd)
+	// Add node to cluster using microceph add-node (latest/stable channel)
+	// This returns a join token that must be used on the joining node
+	addCmd := fmt.Sprintf("microceph add-node %s", joiningNode)
+	log.Infow("adding node to cluster", "command", addCmd)
 	stdout, stderr, err := sshPool.Run(ctx, primaryNode, addCmd)
 	if err != nil {
-		return "", fmt.Errorf("failed to generate join token: %w (stderr: %s)", err, stderr)
+		// Check if node already exists
+		if strings.Contains(stderr, "already") || strings.Contains(stderr, "exists") {
+			log.Infow("node already added to cluster, continuing")
+			// Return empty token - join will be skipped
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to add node to cluster: %w (stderr: %s)", err, stderr)
 	}
 
 	token := strings.TrimSpace(stdout)
-	if token == "" {
-		return "", fmt.Errorf("empty join token received")
-	}
-
-	log.Infow("✓ join token generated", "tokenLength", len(token))
+	log.Infow("✓ node added to cluster", "hasToken", token != "")
 	return token, nil
 }
 
-// Join joins a node to an existing MicroCeph cluster.
+// Join joins a node to an existing MicroCeph cluster using a join token.
 func (p *MicroCephProvider) Join(ctx context.Context, sshPool *ssh.Pool, node, token string) error {
 	log := logging.L().With("component", "microceph", "node", node)
 
-	// Join the cluster
+	// If no token provided, check if node is already in cluster
+	if token == "" {
+		log.Infow("no join token provided, checking if node already in cluster")
+		if _, _, err := sshPool.Run(ctx, node, "microceph status"); err == nil {
+			log.Infow("node already in cluster")
+			return nil
+		}
+		return fmt.Errorf("no join token and node not in cluster")
+	}
+
+	// Wait for MicroCeph daemon to be ready on joining node
+	waitCmd := `for i in $(seq 1 30); do microceph status >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1`
+	if _, _, err := sshPool.Run(ctx, node, waitCmd); err != nil {
+		log.Warnw("MicroCeph daemon may not be fully ready on joining node")
+	}
+
+	// Join the cluster using the token
 	joinCmd := fmt.Sprintf("microceph cluster join %s", token)
 	log.Infow("joining MicroCeph cluster", "command", "microceph cluster join <token>")
 	if _, stderr, err := sshPool.Run(ctx, node, joinCmd); err != nil {
+		// Check if already joined
+		if strings.Contains(stderr, "already") || strings.Contains(stderr, "member") {
+			log.Infow("node already joined to cluster")
+			return nil
+		}
 		return fmt.Errorf("failed to join cluster: %w (stderr: %s)", err, stderr)
+	}
+
+	// Verify join succeeded
+	if _, stderr, err := sshPool.Run(ctx, node, "microceph status"); err != nil {
+		return fmt.Errorf("join succeeded but status check failed: %w (stderr: %s)", err, stderr)
 	}
 
 	log.Infow("✓ node joined MicroCeph cluster")
