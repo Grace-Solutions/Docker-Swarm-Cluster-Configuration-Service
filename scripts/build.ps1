@@ -72,6 +72,18 @@ $Targets = @(
 # ldflags for version embedding
 $LdFlags = "-s -w -X 'main.Version=$Version' -X 'main.BuildTime=$BuildTime' -X 'main.BinaryName=$BinaryName'"
 
+# Check if goversioninfo is available for Windows icon embedding
+$VersionInfoPath = Join-Path $CmdDir "versioninfo.json"
+$HasVersionInfo = (Test-Path $VersionInfoPath) -and (Get-Command goversioninfo -ErrorAction SilentlyContinue)
+if ($HasVersionInfo) {
+    Write-Verbose "Icon embedding enabled (goversioninfo found)"
+} else {
+    Write-Verbose "Icon embedding disabled (goversioninfo or versioninfo.json not found)"
+}
+
+# Clean any existing .syso files before building
+Get-ChildItem -Path $CmdDir -Filter "*.syso" -ErrorAction SilentlyContinue | Remove-Item -Force
+
 Write-Verbose "Building $($Targets.Count) targets..."
 
 $SuccessCount = 0
@@ -93,6 +105,27 @@ foreach ($Target in $Targets) {
     $env:CGO_ENABLED = "0"
 
     try {
+        # For Windows builds, generate the .syso resource file with embedded icon
+        if ($GOOS -eq "windows" -and $HasVersionInfo) {
+            Push-Location $CmdDir
+            try {
+                # Generate architecture-specific .syso file
+                # Go looks for resource.syso or resource_windows_<arch>.syso
+                $SysoFile = "resource.syso"
+                if ($GOARCH -eq "amd64") {
+                    $Result = & goversioninfo -64 -o $SysoFile 2>&1
+                } elseif ($GOARCH -eq "arm64") {
+                    $Result = & goversioninfo -arm -64 -o $SysoFile 2>&1
+                }
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Verbose "    Warning: Failed to generate resource: $Result"
+                }
+            }
+            finally {
+                Pop-Location
+            }
+        }
+
         # Build command
         $BuildArgs = @(
             "build",
@@ -106,6 +139,11 @@ foreach ($Target in $Targets) {
             throw "Build failed: $Result"
         }
 
+        # Clean up .syso file after Windows build
+        if ($GOOS -eq "windows") {
+            Get-ChildItem -Path $CmdDir -Filter "*.syso" -ErrorAction SilentlyContinue | Remove-Item -Force
+        }
+
         $FileSize = (Get-Item $OutputPath).Length / 1MB
         Write-Verbose "  $OutputName OK ($([math]::Round($FileSize, 2)) MB)"
         $SuccessCount++
@@ -113,6 +151,8 @@ foreach ($Target in $Targets) {
     catch {
         Write-Verbose "  $OutputName FAILED: $_"
         $FailCount++
+        # Clean up .syso file on failure too
+        Get-ChildItem -Path $CmdDir -Filter "*.syso" -ErrorAction SilentlyContinue | Remove-Item -Force
     }
 }
 
