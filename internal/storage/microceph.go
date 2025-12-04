@@ -408,11 +408,22 @@ func (p *MicroCephProvider) AddStorage(ctx context.Context, sshPool *ssh.Pool, n
 				log.Warnw("udevadm settle failed before disk add (continuing)", "disk", disk, "error", err, "stderr", strings.TrimSpace(stderr))
 			}
 
-			// Add the disk with a small retry/backoff window. In practice we've seen
-			// that unmounting and immediately adding can still race with the kernel
-			// or Ceph releasing prior state; a short retry window makes this robust
-			// without requiring manual sleeps between commands.
+			// After unmounting/wiping a disk we've seen that immediately calling
+			// `microceph disk add --wipe` can still race with the kernel/udev and
+			// Ceph tearing down previous OSD state. Mirror the successful manual
+			// procedure (unmount, then wait ~15s, then add) with an explicit
+			// settle delay before the first add attempt.
+			const diskSettleDelay = 15 * time.Second
+			log.Infow("waiting for disk to settle before MicroCeph disk add",
+				"disk", disk, "delaySeconds", int(diskSettleDelay/time.Second))
+			time.Sleep(diskSettleDelay)
+
+			// Add the disk with a bounded retry/backoff window. In practice we've
+			// seen that unmounting and immediately adding can still race with the
+			// kernel or Ceph releasing prior state; a short retry window makes this
+			// robust without requiring manual intervention between commands.
 			const maxAttempts = 3
+			const retryDelay = 10 * time.Second
 			var lastErr error
 			for attempt := 1; attempt <= maxAttempts; attempt++ {
 				addCmd := fmt.Sprintf("microceph disk add %s --wipe", disk)
@@ -431,12 +442,9 @@ func (p *MicroCephProvider) AddStorage(ctx context.Context, sshPool *ssh.Pool, n
 
 					if attempt < maxAttempts && transient {
 						log.Warnw("disk add failed with transient error, will retry after delay",
-							"disk", disk, "attempt", attempt, "maxAttempts", maxAttempts, "stderr", trimmed)
-						// Empirically a short delay (on the order of ~15s) is
-						// sufficient between manual unmount and disk add. Two
-						// retries at ~7s each gives us a similar window without
-						// over-sleeping per disk.
-						time.Sleep(7 * time.Second)
+							"disk", disk, "attempt", attempt, "maxAttempts", maxAttempts, "stderr", trimmed,
+							"retryDelaySeconds", int(retryDelay/time.Second))
+						time.Sleep(retryDelay)
 						continue
 					}
 
@@ -689,14 +697,62 @@ func (p *MicroCephProvider) CreatePool(ctx context.Context, sshPool *ssh.Pool, p
 		log.Infow("CephFS filesystem already exists")
 	}
 
-	// Wait for filesystem to be ready
-	time.Sleep(3 * time.Second)
+		// Wait for filesystem to be ready
+		if err := p.waitForCephFS(ctx, sshPool, primaryNode, poolName, 60*time.Second); err != nil {
+			return fmt.Errorf("CephFS filesystem %s did not become ready: %w", poolName, err)
+		}
 
 	log.Infow("✓ CephFS filesystem created", "poolName", poolName)
 	return nil
 }
 
-// GetClusterCredentials retrieves the admin key and monitor addresses from the primary node.
+	// waitForCephFS waits until the given CephFS filesystem is reported by
+	// `ceph fs ls -f json` or the timeout elapses.
+	func (p *MicroCephProvider) waitForCephFS(ctx context.Context, sshPool *ssh.Pool, primaryNode, fsName string, timeout time.Duration) error {
+		log := logging.L().With("component", "microceph", "node", primaryNode, "fsName", fsName)
+		deadline := time.Now().Add(timeout)
+
+		type cephFSInfo struct {
+			Name string `json:"name"`
+		}
+
+		for {
+			if time.Now().After(deadline) {
+				return fmt.Errorf("timed out waiting for CephFS %s to become ready after %s", fsName, timeout)
+			}
+
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled while waiting for CephFS %s to become ready: %w", fsName, ctx.Err())
+			default:
+			}
+
+			// Use `ceph fs ls -f json` rather than text parsing to detect the
+			// presence of the filesystem.
+			cmd := "ceph fs ls -f json"
+			stdout, stderr, err := sshPool.Run(ctx, primaryNode, cmd)
+			if err != nil {
+				log.Warnw("failed to list CephFS filesystems while waiting for readiness (continuing)", "error", err, "stderr", strings.TrimSpace(stderr))
+			} else {
+				var fsList []cephFSInfo
+				if err := json.Unmarshal([]byte(stdout), &fsList); err != nil {
+					log.Warnw("failed to parse CephFS list JSON (continuing)", "error", err, "raw", strings.TrimSpace(stdout))
+				} else {
+					for _, fs := range fsList {
+						if fs.Name == fsName {
+							log.Infow("CephFS filesystem is now reported by Ceph", "fsName", fsName)
+							return nil
+						}
+					}
+				}
+			}
+
+			// Small backoff between checks to avoid spamming Ceph.
+			time.Sleep(5 * time.Second)
+		}
+	}
+
+	// GetClusterCredentials retrieves the admin key and monitor addresses from the primary node.
 // Uses overlay hostname precedence for MON addresses: overlay hostname > overlay IP > private.
 // monNodes is the list of MON node SSH hostnames (for resolving overlay addresses).
 func (p *MicroCephProvider) GetClusterCredentials(ctx context.Context, sshPool *ssh.Pool, primaryNode string, monNodes []string, overlayProvider string) (*ClusterCredentials, error) {
