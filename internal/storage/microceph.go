@@ -319,23 +319,35 @@ func (p *MicroCephProvider) Join(ctx context.Context, sshPool *ssh.Pool, node, t
 		log.Warnw("MicroCeph daemon service not running on joining node")
 	}
 
-	// Detect the best IP for the microceph daemon on this node and pin it explicitly.
-	// Without --microceph-ip, MicroCeph may register the node using its public IP,
-	// which breaks clusters that are only reachable over the overlay/private network.
-	var microcephIP string
-	if netInfo := p.detectNetworkInfo(ctx, sshPool, node); netInfo != nil {
-		microcephIP = netInfo.IP
-		log.Infow("selected MicroCeph IP for join", "ip", microcephIP, "cidr", netInfo.CIDR)
-	} else {
-		log.Warnw("could not detect overlay/private network for MicroCeph join; falling back to default join behavior")
+	// Determine the address to advertise for the MicroCeph daemon on this node
+	// using the same overlay hostname/IP precedence as the rest of the system:
+	//   1) Overlay hostname (Netbird FQDN / Tailscale DNSName)
+	//   2) Overlay IP (100.x.x.x)
+	//   3) Private hostname
+	//   4) Private IP (SSH host)
+	overlayProvider := ""
+	if p.cfg != nil {
+		overlayProvider = p.cfg.GlobalSettings.OverlayProvider
+	}
+	resolvedAddr := strings.TrimSpace(resolveNodeAddress(ctx, sshPool, node, overlayProvider))
+
+	// Fallback: if overlay resolution failed, use detected overlay/private IP
+	if resolvedAddr == "" {
+		if netInfo := p.detectNetworkInfo(ctx, sshPool, node); netInfo != nil {
+			resolvedAddr = netInfo.IP
+			log.Infow("selected fallback MicroCeph IP for join", "ip", resolvedAddr, "cidr", netInfo.CIDR)
+		} else {
+			log.Warnw("could not resolve overlay/private address for MicroCeph join; falling back to default join behavior")
+		}
 	}
 
-	// Join the cluster using the token and, when available, an explicit microceph IP.
+	// Join the cluster using the token and, when available, an explicit
+	// --microceph-ip argument derived from overlay hostname/IP precedence.
 	joinCmd := fmt.Sprintf("microceph cluster join %s", token)
-	if microcephIP != "" {
-		joinCmd = fmt.Sprintf("microceph cluster join %s --microceph-ip %s", token, microcephIP)
+	if resolvedAddr != "" {
+		joinCmd = fmt.Sprintf("microceph cluster join %s --microceph-ip %s", token, resolvedAddr)
 	}
-	log.Infow("joining MicroCeph cluster", "node", node, "command", joinCmd)
+	log.Infow("joining MicroCeph cluster", "node", node, "joinAddress", resolvedAddr, "command", joinCmd)
 	if _, stderr, err := sshPool.Run(ctx, node, joinCmd); err != nil {
 		// Check if already joined
 		if strings.Contains(stderr, "already") || strings.Contains(stderr, "member") {
