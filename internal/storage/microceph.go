@@ -686,21 +686,55 @@ func (p *MicroCephProvider) CreatePool(ctx context.Context, sshPool *ssh.Pool, p
 	// Wait for MDS to be ready
 	time.Sleep(5 * time.Second)
 
-	// Create CephFS filesystem using ceph fs volume command (simpler approach)
-	// This automatically creates the data and metadata pools with proper defaults
-	createFsCmd := fmt.Sprintf("ceph fs volume create %s", poolName)
-	log.Infow("creating CephFS filesystem", "command", createFsCmd)
-	if _, stderr, err := sshPool.Run(ctx, primaryNode, createFsCmd); err != nil {
-		if !strings.Contains(stderr, "already exists") && !strings.Contains(stderr, "already") {
-			return fmt.Errorf("failed to create CephFS: %w (stderr: %s)", err, stderr)
+	// Derive explicit data and metadata pool names from the configured pool
+	// name while still respecting the variable base name, e.g.:
+	//   docker-swarm-0001-data
+	//   docker-swarm-0001-metadata
+	dataPool := fmt.Sprintf("%s-data", poolName)
+	metadataPool := fmt.Sprintf("%s-metadata", poolName)
+
+	// Create the data and metadata pools explicitly with 64 PGs as requested.
+	// Treat "already exists" style errors as success so this stays idempotent.
+	for _, pool := range []string{dataPool, metadataPool} {
+		createPoolCmd := fmt.Sprintf("ceph osd pool create %s 64", pool)
+		log.Infow("creating Ceph pool if needed", "pool", pool, "command", createPoolCmd)
+		if _, stderr, err := sshPool.Run(ctx, primaryNode, createPoolCmd); err != nil {
+			combined := strings.TrimSpace(stderr)
+			if combined == "" {
+				combined = err.Error()
+			}
+			if strings.Contains(combined, "already exists") || strings.Contains(combined, "EEXIST") {
+				log.Infow("Ceph pool already exists", "pool", pool, "detail", combined)
+				continue
+			}
+			return fmt.Errorf("failed to create Ceph pool %s: %w (stderr: %s)", pool, err, stderr)
 		}
-		log.Infow("CephFS filesystem already exists")
 	}
 
-		// Wait for filesystem to be ready
-		if err := p.waitForCephFS(ctx, sshPool, primaryNode, poolName, 60*time.Second); err != nil {
-			return fmt.Errorf("CephFS filesystem %s did not become ready: %w", poolName, err)
+	// Create the CephFS filesystem bound to the explicit data/metadata pools.
+	// We use poolName as the filesystem name so mounts can continue to use
+	// fs=<poolName> when invoking mount(8).
+	fsName := poolName
+	createFsCmd := fmt.Sprintf("ceph fs new %s %s %s", fsName, metadataPool, dataPool)
+	log.Infow("creating CephFS filesystem with explicit pools", "command", createFsCmd,
+		"fsName", fsName, "metadataPool", metadataPool, "dataPool", dataPool)
+	if _, stderr, err := sshPool.Run(ctx, primaryNode, createFsCmd); err != nil {
+		combined := strings.TrimSpace(stderr)
+		if combined == "" {
+			combined = err.Error()
 		}
+		if strings.Contains(combined, "already exists") {
+			log.Infow("CephFS filesystem already exists", "fsName", fsName, "detail", combined)
+		} else {
+			return fmt.Errorf("failed to create CephFS filesystem %s: %w (stderr: %s)", fsName, err, stderr)
+		}
+	}
+
+	// Wait for filesystem to be reported by `ceph fs ls -f json` before
+	// proceeding to mount; this avoids the "No such process" race.
+	if err := p.waitForCephFS(ctx, sshPool, primaryNode, fsName, 60*time.Second); err != nil {
+		return fmt.Errorf("CephFS filesystem %s did not become ready: %w", fsName, err)
+	}
 
 	log.Infow("✓ CephFS filesystem created", "poolName", poolName)
 	return nil
@@ -752,10 +786,15 @@ func (p *MicroCephProvider) CreatePool(ctx context.Context, sshPool *ssh.Pool, p
 		}
 	}
 
-// GetClusterCredentials retrieves the admin key and monitor addresses from the primary node.
-// Uses overlay hostname precedence for MON addresses: overlay hostname > overlay IP > private.
-// monNodes is the list of MON node SSH hostnames (for resolving overlay addresses).
-func (p *MicroCephProvider) GetClusterCredentials(ctx context.Context, sshPool *ssh.Pool, primaryNode string, monNodes []string, overlayProvider string) (*ClusterCredentials, error) {
+	// GetClusterCredentials retrieves the admin key and monitor addresses from the primary node.
+	// For CephFS mounts we now prefer IP-based MON addresses because hostname-based
+	// mounts were failing in some environments. The precedence for MON addresses is:
+	//   1. Overlay IP (Netbird / Tailscale)
+	//   2. Private IP (first non-loopback address)
+	//   3. SSH node string as a final fallback
+	// monNodes is the list of MON node SSH hostnames (for resolving overlay
+	// addresses/IPs).
+	func (p *MicroCephProvider) GetClusterCredentials(ctx context.Context, sshPool *ssh.Pool, primaryNode string, monNodes []string, overlayProvider string) (*ClusterCredentials, error) {
 	log := logging.L().With("component", "microceph", "node", primaryNode)
 
 	// Get admin key using JSON first so we can log and validate the value reliably.
@@ -806,16 +845,16 @@ func (p *MicroCephProvider) GetClusterCredentials(ctx context.Context, sshPool *
 		return nil, fmt.Errorf("empty admin key returned")
 	}
 
-	// Build monitor addresses using overlay hostname precedence
-	// Format: hostname1:6789,hostname2:6789,hostname3:6789
+	// Build monitor addresses using IP precedence (overlay IP > private IP).
+	// Format: ip1:6789,ip2:6789,ip3:6789
 	const monPort = 6789
 	var monAddrList []string
 
 	for _, monNode := range monNodes {
-		// Resolve overlay hostname/IP for each MON node
-		addr := resolveNodeAddress(ctx, sshPool, monNode, overlayProvider)
+		// Resolve the best IP address for each MON node (overlay IP preferred).
+		addr := resolveNodeIP(ctx, sshPool, monNode, overlayProvider)
 		monAddrList = append(monAddrList, fmt.Sprintf("%s:%d", addr, monPort))
-		log.Debugw("resolved MON address", "node", monNode, "addr", addr, "port", monPort)
+		log.Debugw("resolved MON address for CephFS", "node", monNode, "addr", addr, "port", monPort)
 	}
 
 	monAddrs := strings.Join(monAddrList, ",")
@@ -834,7 +873,8 @@ func (p *MicroCephProvider) GetClusterCredentials(ctx context.Context, sshPool *
 }
 
 // MountWithCredentials mounts CephFS on a node using pre-fetched credentials.
-// This is more efficient than Mount() when mounting multiple nodes.
+// This is more efficient than Mount() when mounting multiple nodes and is
+// intended to be idempotent so it can be safely re-run.
 func (p *MicroCephProvider) MountWithCredentials(ctx context.Context, sshPool *ssh.Pool, node, poolName string, creds *ClusterCredentials) error {
 	mountPath := p.GetMountPath()
 	log := logging.L().With("component", "microceph", "node", node, "mountPath", mountPath)
@@ -843,16 +883,45 @@ func (p *MicroCephProvider) MountWithCredentials(ctx context.Context, sshPool *s
 		return fmt.Errorf("cluster credentials required")
 	}
 
+	// Always attempt to ensure /etc/fstab is updated and the system has applied
+	// the mount configuration once this function completes. We log any errors
+	// here instead of failing the whole operation to keep behaviour consistent
+	// with earlier versions, while still surfacing issues for troubleshooting.
+	defer func() {
+		if err := p.ensureFstabAndReload(ctx, sshPool, node, mountPath, poolName, creds); err != nil {
+			log.Warnw("ensureFstabAndReload reported an error", "error", err)
+			return
+		}
+
+		// Optionally log df output for verification without being overly noisy.
+		dfCmd := fmt.Sprintf("df -h %s || true", mountPath)
+		if stdout, _, err := sshPool.Run(ctx, node, dfCmd); err == nil {
+			log.Debugw("filesystem usage after CephFS mount", "mountPath", mountPath, "df", strings.TrimSpace(stdout))
+		}
+	}()
+
 	// Create mount directory
 	mkdirCmd := fmt.Sprintf("mkdir -p %s", mountPath)
 	if _, _, err := sshPool.Run(ctx, node, mkdirCmd); err != nil {
 		return fmt.Errorf("failed to create mount directory: %w", err)
 	}
 
-	// Mount CephFS using provided credentials
-	mountCmd := fmt.Sprintf("mount -t ceph %s:/ %s -o name=admin,secret=%s,fs=%s",
+	// If the mount is already present, skip the mount command but still ensure
+	// /etc/fstab is correct so the mount persists across reboots.
+	mountCheckCmd := fmt.Sprintf("mountpoint -q %s", mountPath)
+	if _, _, err := sshPool.Run(ctx, node, mountCheckCmd); err == nil {
+		log.Infow("CephFS already mounted on node, ensuring fstab entry exists", "mountPath", mountPath)
+		if err := p.ensureFstabAndReload(ctx, sshPool, node, mountPath, poolName, creds); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	// Mount CephFS using provided credentials. Keep fs=<poolName> so we target
+	// the correct filesystem by name.
+	mountCmd := fmt.Sprintf("mount -t ceph %s:/ %s -o name=admin,secret=%s,fs=%s,_netdev",
 		creds.MonAddrs, mountPath, creds.AdminKey, poolName)
-	log.Infow("mounting CephFS", "monAddrs", creds.MonAddrs, "fs", poolName)
+	log.Infow("mounting CephFS", "monAddrs", creds.MonAddrs, "fs", poolName, "mountPath", mountPath)
 	if _, stderr, err := sshPool.Run(ctx, node, mountCmd); err != nil {
 		return fmt.Errorf("failed to mount CephFS: %w (stderr: %s)", err, stderr)
 	}
@@ -865,12 +934,62 @@ func (p *MicroCephProvider) MountWithCredentials(ctx context.Context, sshPool *s
 		log.Warnw("failed to add fstab entry", "error", err)
 	}
 
-	// Reload systemd to pick up fstab changes
+	// Reload systemd to pick up fstab changes (legacy behaviour)
 	if _, _, err := sshPool.Run(ctx, node, "systemctl daemon-reload"); err != nil {
 		log.Warnw("failed to reload systemd daemon", "error", err)
 	}
 
 	log.Infow("✓ CephFS mounted", "mountPath", mountPath)
+	return nil
+}
+
+// ensureFstabAndReload ensures that the correct CephFS entry is present in
+// /etc/fstab, logs the exact line, runs `mount -a` and reloads systemd so the
+// changes take effect. It is safe to call repeatedly; if the line already
+// exists it will not be duplicated.
+func (p *MicroCephProvider) ensureFstabAndReload(
+	ctx context.Context,
+	sshPool *ssh.Pool,
+	node, mountPath, poolName string,
+	creds *ClusterCredentials,
+) error {
+	log := logging.L().With("component", "microceph", "node", node, "mountPath", mountPath)
+
+	// Build the fstab line using MON IPs and the admin key, as requested.
+	fstabEntry := fmt.Sprintf("%s:/ %s ceph name=admin,secret=%s,fs=%s,_netdev 0 0",
+		creds.MonAddrs, mountPath, creds.AdminKey, poolName)
+
+	// Check if the exact line already exists; if not, append it.
+	checkCmd := fmt.Sprintf("grep -Fxq '%s' /etc/fstab", fstabEntry)
+	if _, _, err := sshPool.Run(ctx, node, checkCmd); err != nil {
+		appendCmd := fmt.Sprintf("echo '%s' | sudo tee -a /etc/fstab >/dev/null", fstabEntry)
+		log.Infow("adding CephFS entry to fstab", "entry", fstabEntry)
+		if _, stderr, err := sshPool.Run(ctx, node, appendCmd); err != nil {
+			log.Warnw("failed to add fstab entry", "error", err, "stderr", strings.TrimSpace(stderr))
+			return fmt.Errorf("failed to add fstab entry: %w (stderr: %s)", err, stderr)
+		}
+	} else {
+		log.Infow("fstab entry for CephFS already present", "entry", fstabEntry)
+	}
+
+	// Apply the fstab changes. `mount -a` is safe to call repeatedly; if the
+	// filesystem is already mounted it should either succeed or emit a benign
+	// "already mounted" message.
+	if _, stderr, err := sshPool.Run(ctx, node, "sudo mount -a"); err != nil {
+		combined := strings.TrimSpace(stderr)
+		if !strings.Contains(combined, "already mounted") {
+			log.Warnw("mount -a reported an error", "error", err, "stderr", combined)
+			return fmt.Errorf("mount -a failed: %w (stderr: %s)", err, stderr)
+		}
+		log.Infow("mount -a reported filesystem already mounted", "stderr", combined)
+	}
+
+	// Reload systemd to pick up any updated mount units.
+	if _, stderr, err := sshPool.Run(ctx, node, "sudo systemctl daemon-reload"); err != nil {
+		log.Warnw("failed to reload systemd daemon", "error", err, "stderr", strings.TrimSpace(stderr))
+		return fmt.Errorf("failed to reload systemd daemon: %w (stderr: %s)", err, stderr)
+	}
+
 	return nil
 }
 
@@ -1293,6 +1412,66 @@ func (p *MicroCephProvider) EnableRadosGateway(ctx context.Context, sshPool *ssh
 		SecretKey: secretKey,
 		UserID:    userID,
 	}, nil
+}
+
+// resolveNodeIP resolves the best IP address for a node with precedence:
+// 1. Overlay IP (Netbird / Tailscale)
+// 2. Private IP (first non-loopback address)
+// 3. SSH node string as a final fallback
+func resolveNodeIP(ctx context.Context, sshPool *ssh.Pool, node, overlayProvider string) string {
+	log := logging.L().With("component", "resolve-ip", "node", node)
+	overlayProvider = strings.ToLower(strings.TrimSpace(overlayProvider))
+
+	// 1. Overlay IP from Netbird
+	if overlayProvider == "netbird" {
+		stdout, _, err := sshPool.Run(ctx, node, "netbird status --json")
+		if err == nil {
+			var status struct {
+				NetbirdIP string `json:"netbirdIp"`
+			}
+			if json.Unmarshal([]byte(stdout), &status) == nil {
+				if status.NetbirdIP != "" {
+					ip := strings.Split(status.NetbirdIP, "/")[0]
+					log.Debugw("using overlay IP (netbird)", "ip", ip)
+					return ip
+				}
+			}
+		}
+	} else if overlayProvider == "tailscale" {
+		// 1. Overlay IP from Tailscale
+		stdout, _, err := sshPool.Run(ctx, node, "tailscale status --json")
+		if err == nil {
+			var status struct {
+				Self struct {
+					TailscaleIPs []string `json:"TailscaleIPs"`
+				} `json:"Self"`
+			}
+			if json.Unmarshal([]byte(stdout), &status) == nil {
+				if len(status.Self.TailscaleIPs) > 0 {
+					ip := status.Self.TailscaleIPs[0]
+					log.Debugw("using overlay IP (tailscale)", "ip", ip)
+					return ip
+				}
+			}
+		}
+	}
+
+	// 2. Private IP (first non-loopback address)
+	// Use hostname -I on Linux which returns a space-separated list of addresses.
+	stdout, _, err := sshPool.Run(ctx, node, "hostname -I 2>/dev/null || hostname -i 2>/dev/null || echo ''")
+	if err == nil {
+		fields := strings.Fields(strings.TrimSpace(stdout))
+		for _, f := range fields {
+			if f != "127.0.0.1" && f != "::1" {
+				log.Debugw("using private IP", "ip", f)
+				return f
+			}
+		}
+	}
+
+	// 3. Fallback to SSH node string, which is typically a hostname or IP.
+	log.Debugw("using SSH node as fallback for IP", "node", node)
+	return node
 }
 
 // resolveNodeAddress resolves the best address for a node with precedence:
