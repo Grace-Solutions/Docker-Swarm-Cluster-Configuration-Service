@@ -212,9 +212,6 @@ type NodeConfig struct {
 	// Distributed Storage Settings (per-node)
 	StorageEnabled bool `json:"storageEnabled"` // Enable distributed storage on this node (default: false)
 
-	// Docker Swarm Settings
-	AdvertiseAddr string `json:"advertiseAddr"` // Override auto-detected advertise address for Swarm
-
 	// Script Execution
 	ScriptsEnabled bool `json:"scriptsEnabled"` // Enable script execution on this node (default: true)
 

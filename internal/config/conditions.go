@@ -87,8 +87,6 @@ func getNodeProperty(node NodeConfig, property string) (string, error) {
 		return node.Role, nil
 	case "newhostname":
 		return node.NewHostname, nil
-	case "advertiseaddr":
-		return node.AdvertiseAddr, nil
 	case "sshport":
 		return fmt.Sprintf("%d", node.SSHPort), nil
 	case "storageenabled":
