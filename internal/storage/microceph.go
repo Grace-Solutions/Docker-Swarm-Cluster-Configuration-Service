@@ -319,35 +319,44 @@ func (p *MicroCephProvider) Join(ctx context.Context, sshPool *ssh.Pool, node, t
 		log.Warnw("MicroCeph daemon service not running on joining node")
 	}
 
-	// Determine the address to advertise for the MicroCeph daemon on this node
-	// using the same overlay hostname/IP precedence as the rest of the system:
-	//   1) Overlay hostname (Netbird FQDN / Tailscale DNSName)
-	//   2) Overlay IP (100.x.x.x)
-	//   3) Private hostname
-	//   4) Private IP (SSH host)
-	overlayProvider := ""
-	if p.cfg != nil {
-		overlayProvider = p.cfg.GlobalSettings.OverlayProvider
-	}
-	resolvedAddr := strings.TrimSpace(resolveNodeAddress(ctx, sshPool, node, overlayProvider))
-
-	// Fallback: if overlay resolution failed, use detected overlay/private IP
-	if resolvedAddr == "" {
-		if netInfo := p.detectNetworkInfo(ctx, sshPool, node); netInfo != nil {
-			resolvedAddr = netInfo.IP
-			log.Infow("selected fallback MicroCeph IP for join", "ip", resolvedAddr, "cidr", netInfo.CIDR)
-		} else {
-			log.Warnw("could not resolve overlay/private address for MicroCeph join; falling back to default join behavior")
+		// Determine the preferred hostname/IP for this node using the same overlay
+		// precedence as the rest of the system. We keep this primarily for
+		// logging and for future cases where MicroCeph may support hostnames
+		// directly for its control-plane address.
+		overlayProvider := ""
+		if p.cfg != nil {
+			overlayProvider = p.cfg.GlobalSettings.OverlayProvider
 		}
-	}
+		preferredAddr := strings.TrimSpace(resolveNodeAddress(ctx, sshPool, node, overlayProvider))
 
-	// Join the cluster using the token and, when available, an explicit
-	// --microceph-ip argument derived from overlay hostname/IP precedence.
-	joinCmd := fmt.Sprintf("microceph cluster join %s", token)
-	if resolvedAddr != "" {
-		joinCmd = fmt.Sprintf("microceph cluster join %s --microceph-ip %s", token, resolvedAddr)
-	}
-	log.Infow("joining MicroCeph cluster", "node", node, "joinAddress", resolvedAddr, "command", joinCmd)
+		// For --microceph-ip specifically, MicroCeph currently expects an IP
+		// address (ParseAddr fails on hostnames). Select an IP with precedence:
+		//   1) Overlay/private IP from detectNetworkInfo (CGNAT 100.64/10 first,
+		//      then RFC1918)
+		//   2) If preferredAddr parses as an IP, use it
+		//   3) Otherwise, omit --microceph-ip and let MicroCeph auto-detect
+		joinIP := ""
+		if netInfo := p.detectNetworkInfo(ctx, sshPool, node); netInfo != nil {
+			joinIP = netInfo.IP
+			log.Infow("selected MicroCeph IP for join", "ip", joinIP, "cidr", netInfo.CIDR)
+		} else if preferredAddr != "" {
+			if ip := net.ParseIP(preferredAddr); ip != nil {
+				joinIP = ip.String()
+				log.Infow("using preferred address as MicroCeph join IP", "ip", joinIP)
+			} else {
+				log.Warnw("preferred address for MicroCeph join is not an IP; will join without explicit --microceph-ip", "preferredAddr", preferredAddr)
+			}
+		}
+
+		// Join the cluster using the token and, when available, an explicit
+		// --microceph-ip argument. The hostname/FQDN (preferredAddr) is kept for
+		// logging so we can switch to hostname-based control-plane addresses in
+		// the future if/when MicroCeph supports it end-to-end.
+		joinCmd := fmt.Sprintf("microceph cluster join %s", token)
+		if joinIP != "" {
+			joinCmd = fmt.Sprintf("microceph cluster join %s --microceph-ip '%s'", token, joinIP)
+		}
+		log.Infow("joining MicroCeph cluster", "node", node, "joinAddress", preferredAddr, "joinIP", joinIP, "command", joinCmd)
 	if _, stderr, err := sshPool.Run(ctx, node, joinCmd); err != nil {
 		// Check if already joined
 		if strings.Contains(stderr, "already") || strings.Contains(stderr, "member") {
