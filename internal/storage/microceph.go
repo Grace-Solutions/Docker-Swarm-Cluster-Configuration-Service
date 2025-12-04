@@ -253,32 +253,33 @@ func (p *MicroCephProvider) detectNetworkCIDR(ctx context.Context, sshPool *ssh.
 }
 
 // GenerateJoinToken adds a node to the cluster and returns a join token.
-// For reef/stable MicroCeph, this uses 'microceph cluster add <hostname>'.
-// The hostname is fetched from the joining node to ensure it matches.
+// Uses 'microceph cluster add <host>' where <host> is resolved using hostname
+// precedence: overlay hostname > overlay IP > private hostname > private IP.
 func (p *MicroCephProvider) GenerateJoinToken(ctx context.Context, sshPool *ssh.Pool, primaryNode, joiningNode string) (string, error) {
 	log := logging.L().With("component", "microceph", "primaryNode", primaryNode, "joiningNode", joiningNode)
 
-	// Get the actual hostname from the joining node (microceph uses system hostname)
-	hostnameCmd := "hostname"
-	hostname, _, err := sshPool.Run(ctx, joiningNode, hostnameCmd)
-	if err != nil {
-		return "", fmt.Errorf("failed to get hostname from joining node: %w", err)
+	// Determine the join address using the configured overlay provider (if any).
+	overlayProvider := ""
+	if p.cfg != nil {
+		overlayProvider = p.cfg.GlobalSettings.OverlayProvider
 	}
-	hostname = strings.TrimSpace(hostname)
-	if hostname == "" {
-		return "", fmt.Errorf("empty hostname returned from joining node")
+	joinAddress := resolveNodeAddress(ctx, sshPool, joiningNode, overlayProvider)
+	joinAddress = strings.TrimSpace(joinAddress)
+	if joinAddress == "" {
+		return "", fmt.Errorf("failed to resolve join address for joining node %s", joiningNode)
 	}
-	log.Infow("resolved joining node hostname", "sshHost", joiningNode, "hostname", hostname)
 
-	// Add node to cluster using 'microceph cluster add' (reef/stable channel)
+	log.Infow("resolved joining node address", "sshHost", joiningNode, "joinAddress", joinAddress)
+
+	// Add node to cluster using 'microceph cluster add <joinAddress>'
 	// This returns a join token that must be used on the joining node
-	addCmd := fmt.Sprintf("microceph cluster add %s", hostname)
-	log.Infow("generating join token for node", "command", addCmd, "hostname", hostname)
+	addCmd := fmt.Sprintf("microceph cluster add %s", joinAddress)
+	log.Infow("generating join token for node", "command", addCmd, "joinAddress", joinAddress)
 	stdout, stderr, err := sshPool.Run(ctx, primaryNode, addCmd)
 	if err != nil {
 		// Check if node already exists
 		if strings.Contains(stderr, "already") || strings.Contains(stderr, "exists") || strings.Contains(stderr, "is already a cluster member") {
-			log.Infow("node already added to cluster, continuing", "hostname", hostname)
+			log.Infow("node already added to cluster, continuing", "joinAddress", joinAddress)
 			// Return empty token - join will be skipped
 			return "", nil
 		}
@@ -290,10 +291,8 @@ func (p *MicroCephProvider) GenerateJoinToken(ctx context.Context, sshPool *ssh.
 		return "", fmt.Errorf("no join token returned from 'microceph cluster add'")
 	}
 
-	// Log the token for visibility
-	log.Infow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	log.Infow("JOIN TOKEN GENERATED", "hostname", hostname, "token", token)
-	log.Infow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	// Log the token and where it will be used
+	log.Infow("join token generated", "joinAddress", joinAddress, "token", token)
 
 	return token, nil
 }
@@ -319,21 +318,9 @@ func (p *MicroCephProvider) Join(ctx context.Context, sshPool *ssh.Pool, node, t
 		log.Warnw("MicroCeph daemon service not running on joining node")
 	}
 
-	// Verify MicroCeph database is ready on joining node
-	dbCheckCmd := "microceph status >/dev/null 2>&1 && echo 'ready' || echo 'not ready'"
-	stdout, _, _ = sshPool.Run(ctx, node, dbCheckCmd)
-	if strings.Contains(stdout, "not ready") {
-		// Wait for database to be ready
-		log.Infow("waiting for MicroCeph database to initialize on joining node")
-		waitDbCmd := `for i in $(seq 1 15); do microceph status >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1`
-		if _, _, err := sshPool.Run(ctx, node, waitDbCmd); err != nil {
-			log.Warnw("MicroCeph database may not be ready on joining node, attempting join anyway")
-		}
-	}
-
 	// Join the cluster using the token
 	joinCmd := fmt.Sprintf("microceph cluster join %s", token)
-	log.Infow("joining MicroCeph cluster", "command", "microceph cluster join <token>")
+	log.Infow("joining MicroCeph cluster", "command", joinCmd)
 	if _, stderr, err := sshPool.Run(ctx, node, joinCmd); err != nil {
 		// Check if already joined
 		if strings.Contains(stderr, "already") || strings.Contains(stderr, "member") {
