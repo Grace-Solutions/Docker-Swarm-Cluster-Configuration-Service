@@ -347,44 +347,44 @@ func (p *MicroCephProvider) Join(ctx context.Context, sshPool *ssh.Pool, node, t
 		log.Warnw("MicroCeph daemon service not running on joining node")
 	}
 
-		// Determine the preferred hostname/IP for this node using the same overlay
-		// precedence as the rest of the system. We keep this primarily for
-		// logging and for future cases where MicroCeph may support hostnames
-		// directly for its control-plane address.
-		overlayProvider := ""
-		if p.cfg != nil {
-			overlayProvider = p.cfg.GlobalSettings.OverlayProvider
-		}
-		preferredAddr := strings.TrimSpace(resolveNodeAddress(ctx, sshPool, node, overlayProvider))
+	// Determine the preferred hostname/IP for this node using the same overlay
+	// precedence as the rest of the system. We keep this primarily for
+	// logging and for future cases where MicroCeph may support hostnames
+	// directly for its control-plane address.
+	overlayProvider := ""
+	if p.cfg != nil {
+		overlayProvider = p.cfg.GlobalSettings.OverlayProvider
+	}
+	preferredAddr := strings.TrimSpace(resolveNodeAddress(ctx, sshPool, node, overlayProvider))
 
-		// For --microceph-ip specifically, MicroCeph currently expects an IP
-		// address (ParseAddr fails on hostnames). Select an IP with precedence:
-		//   1) Overlay/private IP from detectNetworkInfo (CGNAT 100.64/10 first,
-		//      then RFC1918)
-		//   2) If preferredAddr parses as an IP, use it
-		//   3) Otherwise, omit --microceph-ip and let MicroCeph auto-detect
-		joinIP := ""
-		if netInfo := p.detectNetworkInfo(ctx, sshPool, node); netInfo != nil {
-			joinIP = netInfo.IP
-			log.Infow("selected MicroCeph IP for join", "ip", joinIP, "cidr", netInfo.CIDR)
-		} else if preferredAddr != "" {
-			if ip := net.ParseIP(preferredAddr); ip != nil {
-				joinIP = ip.String()
-				log.Infow("using preferred address as MicroCeph join IP", "ip", joinIP)
-			} else {
-				log.Warnw("preferred address for MicroCeph join is not an IP; will join without explicit --microceph-ip", "preferredAddr", preferredAddr)
-			}
+	// For --microceph-ip specifically, MicroCeph currently expects an IP
+	// address (ParseAddr fails on hostnames). Select an IP with precedence:
+	//   1) Overlay/private IP from detectNetworkInfo (CGNAT 100.64/10 first,
+	//      then RFC1918)
+	//   2) If preferredAddr parses as an IP, use it
+	//   3) Otherwise, omit --microceph-ip and let MicroCeph auto-detect
+	joinIP := ""
+	if netInfo := p.detectNetworkInfo(ctx, sshPool, node); netInfo != nil {
+		joinIP = netInfo.IP
+		log.Infow("selected MicroCeph IP for join", "ip", joinIP, "cidr", netInfo.CIDR)
+	} else if preferredAddr != "" {
+		if ip := net.ParseIP(preferredAddr); ip != nil {
+			joinIP = ip.String()
+			log.Infow("using preferred address as MicroCeph join IP", "ip", joinIP)
+		} else {
+			log.Warnw("preferred address for MicroCeph join is not an IP; will join without explicit --microceph-ip", "preferredAddr", preferredAddr)
 		}
+	}
 
-		// Join the cluster using the token and, when available, an explicit
-		// --microceph-ip argument. The hostname/FQDN (preferredAddr) is kept for
-		// logging so we can switch to hostname-based control-plane addresses in
-		// the future if/when MicroCeph supports it end-to-end.
-		joinCmd := fmt.Sprintf("microceph cluster join %s", token)
-		if joinIP != "" {
-			joinCmd = fmt.Sprintf("microceph cluster join %s --microceph-ip '%s'", token, joinIP)
-		}
-		log.Infow("joining MicroCeph cluster", "node", node, "joinAddress", preferredAddr, "joinIP", joinIP, "command", joinCmd)
+	// Join the cluster using the token and, when available, an explicit
+	// --microceph-ip argument. The hostname/FQDN (preferredAddr) is kept for
+	// logging so we can switch to hostname-based control-plane addresses in
+	// the future if/when MicroCeph supports it end-to-end.
+	joinCmd := fmt.Sprintf("microceph cluster join %s", token)
+	if joinIP != "" {
+		joinCmd = fmt.Sprintf("microceph cluster join %s --microceph-ip '%s'", token, joinIP)
+	}
+	log.Infow("joining MicroCeph cluster", "node", node, "joinAddress", preferredAddr, "joinIP", joinIP, "command", joinCmd)
 	if _, stderr, err := sshPool.Run(ctx, node, joinCmd); err != nil {
 		// Check if this is an idempotent "already joined" style error. MicroCeph
 		// may report conditions such as "Remote with address ... exists" when a
@@ -430,66 +430,66 @@ func (p *MicroCephProvider) AddStorage(ctx context.Context, sshPool *ssh.Pool, n
 		// "Device or resource busy" / malformed label errors on re-runs.
 		p.prepareDiskForMicroCeph(ctx, sshPool, node, disk)
 
-			// Give udev a chance to settle after destructive operations so that
-			// subsequent ceph-osd mkfs does not immediately hit a busy device.
-			settleCmd := "command -v udevadm >/dev/null 2>&1 && udevadm settle || true"
-			if _, stderr, err := sshPool.Run(ctx, node, settleCmd); err != nil {
-				log.Warnw("udevadm settle failed before disk add (continuing)", "disk", disk, "error", err, "stderr", strings.TrimSpace(stderr))
-			}
+		// Give udev a chance to settle after destructive operations so that
+		// subsequent ceph-osd mkfs does not immediately hit a busy device.
+		settleCmd := "command -v udevadm >/dev/null 2>&1 && udevadm settle || true"
+		if _, stderr, err := sshPool.Run(ctx, node, settleCmd); err != nil {
+			log.Warnw("udevadm settle failed before disk add (continuing)", "disk", disk, "error", err, "stderr", strings.TrimSpace(stderr))
+		}
 
-			// After unmounting/wiping a disk we've seen that immediately calling
-			// `microceph disk add --wipe` can still race with the kernel/udev and
-			// Ceph tearing down previous OSD state. Mirror the successful manual
-			// procedure (unmount, then wait ~15s, then add) with an explicit
-			// settle delay before the first add attempt.
-			const diskSettleDelay = 15 * time.Second
-			log.Infow("waiting for disk to settle before MicroCeph disk add",
-				"disk", disk, "delaySeconds", int(diskSettleDelay/time.Second))
-			time.Sleep(diskSettleDelay)
+		// After unmounting/wiping a disk we've seen that immediately calling
+		// `microceph disk add --wipe` can still race with the kernel/udev and
+		// Ceph tearing down previous OSD state. Mirror the successful manual
+		// procedure (unmount, then wait ~15s, then add) with an explicit
+		// settle delay before the first add attempt.
+		const diskSettleDelay = 15 * time.Second
+		log.Infow("waiting for disk to settle before MicroCeph disk add",
+			"disk", disk, "delaySeconds", int(diskSettleDelay/time.Second))
+		time.Sleep(diskSettleDelay)
 
-			// Add the disk with a bounded retry/backoff window. In practice we've
-			// seen that unmounting and immediately adding can still race with the
-			// kernel or Ceph releasing prior state; a short retry window makes this
-			// robust without requiring manual intervention between commands.
-			const maxAttempts = 3
-			const retryDelay = 10 * time.Second
-			var lastErr error
-			for attempt := 1; attempt <= maxAttempts; attempt++ {
-				addCmd := fmt.Sprintf("microceph disk add %s --wipe", disk)
-				log.Infow("adding disk", "disk", disk, "command", addCmd, "attempt", attempt, "maxAttempts", maxAttempts)
-				if _, stderr, err := sshPool.Run(ctx, node, addCmd); err != nil {
-					lastErr = err
+		// Add the disk with a bounded retry/backoff window. In practice we've
+		// seen that unmounting and immediately adding can still race with the
+		// kernel or Ceph releasing prior state; a short retry window makes this
+		// robust without requiring manual intervention between commands.
+		const maxAttempts = 3
+		const retryDelay = 10 * time.Second
+		var lastErr error
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			addCmd := fmt.Sprintf("microceph disk add %s --wipe", disk)
+			log.Infow("adding disk", "disk", disk, "command", addCmd, "attempt", attempt, "maxAttempts", maxAttempts)
+			if _, stderr, err := sshPool.Run(ctx, node, addCmd); err != nil {
+				lastErr = err
 
-					// Only retry on errors that are very likely to be transient after
-					// a wipe/unmount sequence. This mirrors the errors observed when
-					// reusing GlusterFS bricks too quickly.
-					trimmed := strings.TrimSpace(stderr)
-					transient := strings.Contains(trimmed, "Device or resource busy") ||
-						strings.Contains(trimmed, "unable to decode label") ||
-						strings.Contains(trimmed, "Malformed input") ||
-						strings.Contains(trimmed, "End of buffer")
+				// Only retry on errors that are very likely to be transient after
+				// a wipe/unmount sequence. This mirrors the errors observed when
+				// reusing GlusterFS bricks too quickly.
+				trimmed := strings.TrimSpace(stderr)
+				transient := strings.Contains(trimmed, "Device or resource busy") ||
+					strings.Contains(trimmed, "unable to decode label") ||
+					strings.Contains(trimmed, "Malformed input") ||
+					strings.Contains(trimmed, "End of buffer")
 
-					if attempt < maxAttempts && transient {
-						log.Warnw("disk add failed with transient error, will retry after delay",
-							"disk", disk, "attempt", attempt, "maxAttempts", maxAttempts, "stderr", trimmed,
-							"retryDelaySeconds", int(retryDelay/time.Second))
-						time.Sleep(retryDelay)
-						continue
-					}
-
-					log.Warnw("failed to add disk (not retrying)", "disk", disk, "error", err, "stderr", trimmed)
-					break
+				if attempt < maxAttempts && transient {
+					log.Warnw("disk add failed with transient error, will retry after delay",
+						"disk", disk, "attempt", attempt, "maxAttempts", maxAttempts, "stderr", trimmed,
+						"retryDelaySeconds", int(retryDelay/time.Second))
+					time.Sleep(retryDelay)
+					continue
 				}
 
-				// Success
-				lastErr = nil
-				addedDisks++
+				log.Warnw("failed to add disk (not retrying)", "disk", disk, "error", err, "stderr", trimmed)
 				break
 			}
 
-			if lastErr != nil {
-				log.Warnw("failed to add disk after retries", "disk", disk, "error", lastErr)
-			}
+			// Success
+			lastErr = nil
+			addedDisks++
+			break
+		}
+
+		if lastErr != nil {
+			log.Warnw("failed to add disk after retries", "disk", disk, "error", lastErr)
+		}
 	}
 
 	// If no physical disks were added and loop devices are allowed, add a loop device
@@ -510,23 +510,23 @@ func (p *MicroCephProvider) AddStorage(ctx context.Context, sshPool *ssh.Pool, n
 		// The --data-dir flag specifies where to store the loop file
 		loopSpec := fmt.Sprintf("loop,%dG,1", mcCfg.LoopDeviceSizeGB)
 		addCmd := fmt.Sprintf("microceph disk add %s --data-dir %s", loopSpec, mcCfg.LoopDeviceDirectory)
-			log.Infow("adding loop device", "command", addCmd)
-			if _, stderr, err := sshPool.Run(ctx, node, addCmd); err != nil {
-				return fmt.Errorf("failed to add loop device: %w (stderr: %s)", err, stderr)
-			}
-			log.Infow("✓ loop device added", "directory", mcCfg.LoopDeviceDirectory, "sizeGB", mcCfg.LoopDeviceSizeGB)
-		} else if addedDisks > 0 {
-			log.Infow("✓ physical disks added", "count", addedDisks)
-		} else {
-			log.Warnw("no storage added - no eligible disks and loop devices not allowed")
+		log.Infow("adding loop device", "command", addCmd)
+		if _, stderr, err := sshPool.Run(ctx, node, addCmd); err != nil {
+			return fmt.Errorf("failed to add loop device: %w (stderr: %s)", err, stderr)
 		}
+		log.Infow("✓ loop device added", "directory", mcCfg.LoopDeviceDirectory, "sizeGB", mcCfg.LoopDeviceSizeGB)
+	} else if addedDisks > 0 {
+		log.Infow("✓ physical disks added", "count", addedDisks)
+	} else {
+		log.Warnw("no storage added - no eligible disks and loop devices not allowed")
+	}
 
-		// Always show the current disk state after attempting to add storage so
-		// operators can see which OSDs were actually configured and which disks
-		// remain available.
-		p.logDiskListJSON(ctx, sshPool, node, "post-add-storage")
+	// Always show the current disk state after attempting to add storage so
+	// operators can see which OSDs were actually configured and which disks
+	// remain available.
+	p.logDiskListJSON(ctx, sshPool, node, "post-add-storage")
 
-		return nil
+	return nil
 }
 
 // prepareDiskForMicroCeph performs best-effort OS-level cleanup on a disk
@@ -547,7 +547,7 @@ func (p *MicroCephProvider) AddStorage(ctx context.Context, sshPool *ssh.Pool, n
 func (p *MicroCephProvider) prepareDiskForMicroCeph(ctx context.Context, sshPool *ssh.Pool, node, disk string) {
 	log := logging.L().With("component", "microceph", "node", node)
 
-		script := fmt.Sprintf(`DISK="%s"
+	script := fmt.Sprintf(`DISK="%s"
 
 		# Do not operate on the root filesystem disk even if misconfigured
 		ROOT_DEV=$(findmnt -n -o SOURCE / 2>/dev/null || echo "")
@@ -769,61 +769,82 @@ func (p *MicroCephProvider) CreatePool(ctx context.Context, sshPool *ssh.Pool, p
 	return nil
 }
 
-	// waitForCephFS waits until the given CephFS filesystem is reported by
-	// `ceph fs ls -f json` or the timeout elapses.
-	func (p *MicroCephProvider) waitForCephFS(ctx context.Context, sshPool *ssh.Pool, primaryNode, fsName string, timeout time.Duration) error {
-		log := logging.L().With("component", "microceph", "node", primaryNode, "fsName", fsName)
-		deadline := time.Now().Add(timeout)
+// waitForCephFS waits until the given CephFS filesystem is reported by
+// `ceph fs ls -f json` or the timeout elapses.
+func (p *MicroCephProvider) waitForCephFS(ctx context.Context, sshPool *ssh.Pool, primaryNode, fsName string, timeout time.Duration) error {
+	log := logging.L().With("component", "microceph", "node", primaryNode, "fsName", fsName)
+	deadline := time.Now().Add(timeout)
 
-		type cephFSInfo struct {
-			Name string `json:"name"`
+	type cephFSInfo struct {
+		Name string `json:"name"`
+	}
+
+	for {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for CephFS %s to become ready after %s", fsName, timeout)
 		}
 
-		for {
-			if time.Now().After(deadline) {
-				return fmt.Errorf("timed out waiting for CephFS %s to become ready after %s", fsName, timeout)
-			}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled while waiting for CephFS %s to become ready: %w", fsName, ctx.Err())
+		default:
+		}
 
-			select {
-			case <-ctx.Done():
-				return fmt.Errorf("context cancelled while waiting for CephFS %s to become ready: %w", fsName, ctx.Err())
-			default:
-			}
-
-			// Use `ceph fs ls -f json` rather than text parsing to detect the
-			// presence of the filesystem.
-			cmd := "ceph fs ls -f json"
-			stdout, stderr, err := sshPool.Run(ctx, primaryNode, cmd)
-			if err != nil {
-				log.Warnw("failed to list CephFS filesystems while waiting for readiness (continuing)", "error", err, "stderr", strings.TrimSpace(stderr))
+		// Use `ceph fs ls -f json` rather than text parsing to detect the
+		// presence of the filesystem.
+		cmd := "ceph fs ls -f json"
+		stdout, stderr, err := sshPool.Run(ctx, primaryNode, cmd)
+		if err != nil {
+			log.Warnw("failed to list CephFS filesystems while waiting for readiness (continuing)", "error", err, "stderr", strings.TrimSpace(stderr))
+		} else {
+			var fsList []cephFSInfo
+			if err := json.Unmarshal([]byte(stdout), &fsList); err != nil {
+				log.Warnw("failed to parse CephFS list JSON (continuing)", "error", err, "raw", strings.TrimSpace(stdout))
 			} else {
-				var fsList []cephFSInfo
-				if err := json.Unmarshal([]byte(stdout), &fsList); err != nil {
-					log.Warnw("failed to parse CephFS list JSON (continuing)", "error", err, "raw", strings.TrimSpace(stdout))
-				} else {
-					for _, fs := range fsList {
-						if fs.Name == fsName {
-							log.Infow("CephFS filesystem is now reported by Ceph", "fsName", fsName)
-							return nil
-						}
+				for _, fs := range fsList {
+					if fs.Name == fsName {
+						log.Infow("CephFS filesystem is now reported by Ceph", "fsName", fsName)
+						return nil
 					}
 				}
 			}
-
-			// Small backoff between checks to avoid spamming Ceph.
-			time.Sleep(5 * time.Second)
 		}
-	}
 
-	// GetClusterCredentials retrieves the admin key and monitor addresses from the primary node.
-	// For CephFS mounts we now prefer IP-based MON addresses because hostname-based
-	// mounts were failing in some environments. The precedence for MON addresses is:
-	//   1. Overlay IP (Netbird / Tailscale)
-	//   2. Private IP (first non-loopback address)
-	//   3. SSH node string as a final fallback
-	// monNodes is the list of MON node SSH hostnames (for resolving overlay
-	// addresses/IPs).
-	func (p *MicroCephProvider) GetClusterCredentials(ctx context.Context, sshPool *ssh.Pool, primaryNode string, monNodes []string, overlayProvider string) (*ClusterCredentials, error) {
+		// Small backoff between checks to avoid spamming Ceph.
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// CephFS mount timeout tuning. These values are used both for the direct
+// kernel client mount and the persisted /etc/fstab entry so that CephFS
+// does not block boot or `mount -a` indefinitely when the cluster or MONs
+// are slow or unreachable.
+const (
+	// cephMonTimeoutSeconds controls how long the Ceph client waits for
+	// monitors before giving up. This is passed as the `mon_timeout` mount
+	// option.
+	cephMonTimeoutSeconds = 10
+
+	// cephMountTimeoutSeconds bounds the overall mount operation from the
+	// Ceph client's perspective via the `mount_timeout` option.
+	cephMountTimeoutSeconds = 15
+
+	// systemdMountTimeout and systemdDeviceTimeout are passed via
+	// x-systemd.* options in /etc/fstab so that systemd refuses to wait
+	// indefinitely when CephFS cannot be mounted.
+	systemdMountTimeout  = "20s"
+	systemdDeviceTimeout = "20s"
+)
+
+// GetClusterCredentials retrieves the admin key and monitor addresses from the primary node.
+// For CephFS mounts we now prefer IP-based MON addresses because hostname-based
+// mounts were failing in some environments. The precedence for MON addresses is:
+//   1. Overlay IP (Netbird / Tailscale)
+//   2. Private IP (first non-loopback address)
+//   3. SSH node string as a final fallback
+// monNodes is the list of MON node SSH hostnames (for resolving overlay
+// addresses/IPs).
+func (p *MicroCephProvider) GetClusterCredentials(ctx context.Context, sshPool *ssh.Pool, primaryNode string, monNodes []string, overlayProvider string) (*ClusterCredentials, error) {
 	log := logging.L().With("component", "microceph", "node", primaryNode)
 
 	// Get admin key using JSON first so we can log and validate the value reliably.
@@ -946,31 +967,34 @@ func (p *MicroCephProvider) MountWithCredentials(ctx context.Context, sshPool *s
 		return nil
 	}
 
-		// Mount CephFS using provided credentials. Follow the user-specified
-		// recipe closely and rely on Ceph's default filesystem selection (when a
-		// single filesystem exists) instead of passing an explicit fs=<name>
-		// option. This keeps the mount options compatible with a wider range of
-		// Ceph client versions and matches the documented fstab format:
-		//   <MON_IPS>:/ <mountPath> ceph name=admin,secret=<KEY>,_netdev 0 0
-		mountCmd := fmt.Sprintf("sudo mount -t ceph %s:/ %s -o name=admin,secret=%s,_netdev",
-			creds.MonAddrs, mountPath, creds.AdminKey)
-		log.Infow("mounting CephFS", "monAddrs", creds.MonAddrs, "mountPath", mountPath)
+	// Mount CephFS using provided credentials. Follow the user-specified
+	// recipe closely and rely on Ceph's default filesystem selection (when a
+	// single filesystem exists) instead of passing an explicit fs=<name>
+	// option. To avoid hanging indefinitely when MONs are unreachable, we
+	// also pass Ceph's `mon_timeout` and `mount_timeout` options so the
+	// kernel client fails within a bounded time window instead of blocking
+	// boot or `mount -a` forever.
+	mountCmd := fmt.Sprintf(
+		"sudo mount -t ceph %s:/ %s -o name=admin,secret=%s,_netdev,mon_timeout=%d,mount_timeout=%d",
+		creds.MonAddrs, mountPath, creds.AdminKey, cephMonTimeoutSeconds, cephMountTimeoutSeconds,
+	)
+	log.Infow("mounting CephFS", "monAddrs", creds.MonAddrs, "mountPath", mountPath)
 	if _, stderr, err := sshPool.Run(ctx, node, mountCmd); err != nil {
-			// Capture recent kernel messages to aid in diagnosing mount failures
-			// such as "wrong fs type, bad option, bad superblock" without requiring
-			// an additional manual test cycle.
-			dmesgCmd := "dmesg | tail -n 50 || true"
-			if dmesgOut, _, dmesgErr := sshPool.Run(ctx, node, dmesgCmd); dmesgErr == nil {
-				log.Warnw("dmesg output after CephFS mount failure", "dmesgTail", strings.TrimSpace(dmesgOut))
-			} else {
-				log.Warnw("failed to collect dmesg after CephFS mount failure", "error", dmesgErr)
-			}
-			
+		// Capture recent kernel messages to aid in diagnosing mount failures
+		// such as "wrong fs type, bad option, bad superblock" without requiring
+		// an additional manual test cycle.
+		dmesgCmd := "dmesg | tail -n 50 || true"
+		if dmesgOut, _, dmesgErr := sshPool.Run(ctx, node, dmesgCmd); dmesgErr == nil {
+			log.Warnw("dmesg output after CephFS mount failure", "dmesgTail", strings.TrimSpace(dmesgOut))
+		} else {
+			log.Warnw("failed to collect dmesg after CephFS mount failure", "error", dmesgErr)
+		}
+
 		return fmt.Errorf("failed to mount CephFS: %w (stderr: %s)", err, stderr)
 	}
-		
-		log.Infow("✓ CephFS mounted", "mountPath", mountPath)
-		return nil
+
+	log.Infow("✓ CephFS mounted", "mountPath", mountPath)
+	return nil
 }
 
 // ensureFstabAndReload ensures that the correct CephFS entry is present in
@@ -987,39 +1011,44 @@ func (p *MicroCephProvider) ensureFstabAndReload(
 
 	// Build the fstab line using MON IPs and the admin key, following the
 	// documented format and relying on Ceph's default filesystem selection
-	// when only a single filesystem exists:
-	//   <MON_IPS>:/ <mountPath> ceph name=admin,secret=<KEY>,_netdev 0 0
-	fstabEntry := fmt.Sprintf("%s:/ %s ceph name=admin,secret=%s,_netdev 0 0",
-		creds.MonAddrs, mountPath, creds.AdminKey)
+	// when only a single filesystem exists. To prevent `mount -a` and boot
+	// from hanging indefinitely when Ceph is unavailable, we also include
+	// Ceph's own timeout options (mon_timeout/mount_timeout) as well as
+	// systemd x-systemd.* timeouts:
+	//   <MON_IPS>:/ <mountPath> ceph name=admin,secret=<KEY>,_netdev,mon_timeout=10,\
+	//       mount_timeout=15,x-systemd.mount-timeout=20s,x-systemd.device-timeout=20s 0 0
+	fstabEntry := fmt.Sprintf("%s:/ %s ceph name=admin,secret=%s,_netdev,mon_timeout=%d,mount_timeout=%d,x-systemd.mount-timeout=%s,x-systemd.device-timeout=%s 0 0",
+		creds.MonAddrs, mountPath, creds.AdminKey, cephMonTimeoutSeconds, cephMountTimeoutSeconds, systemdMountTimeout, systemdDeviceTimeout)
 
-	// Check if the exact line already exists; if not, append it.
-	checkCmd := fmt.Sprintf("grep -Fxq '%s' /etc/fstab", fstabEntry)
-	if _, _, err := sshPool.Run(ctx, node, checkCmd); err != nil {
-		appendCmd := fmt.Sprintf("echo '%s' | sudo tee -a /etc/fstab >/dev/null", fstabEntry)
-		log.Infow("adding CephFS entry to fstab", "entry", fstabEntry)
-		if _, stderr, err := sshPool.Run(ctx, node, appendCmd); err != nil {
-			log.Warnw("failed to add fstab entry", "error", err, "stderr", strings.TrimSpace(stderr))
-			return fmt.Errorf("failed to add fstab entry: %w (stderr: %s)", err, stderr)
-		}
-	} else {
-		log.Infow("fstab entry for CephFS already present", "entry", fstabEntry)
+	// Ensure idempotency by removing any existing fstab lines that reference
+	// this mount path before appending the new, timeout-aware entry.
+	cleanupCmd := fmt.Sprintf("sudo sed -i '\\|%s|d' /etc/fstab", mountPath)
+	sshPool.Run(ctx, node, cleanupCmd)
+
+	appendCmd := fmt.Sprintf("echo '%s' | sudo tee -a /etc/fstab >/dev/null", fstabEntry)
+	log.Infow("adding/updating CephFS entry in fstab", "entry", fstabEntry)
+	if _, stderr, err := sshPool.Run(ctx, node, appendCmd); err != nil {
+		log.Warnw("failed to add fstab entry", "error", err, "stderr", strings.TrimSpace(stderr))
+		return fmt.Errorf("failed to add fstab entry: %w (stderr: %s)", err, stderr)
 	}
 
 	// Apply the fstab changes. `mount -a` is safe to call repeatedly; if the
 	// filesystem is already mounted it should either succeed or emit a benign
-	// "already mounted" message.
+	// "already mounted" message. The fstab entry includes Ceph and systemd
+	// timeouts so this call will no longer hang indefinitely on boot or when
+	// the cluster is unavailable.
 	if _, stderr, err := sshPool.Run(ctx, node, "sudo mount -a"); err != nil {
 		combined := strings.TrimSpace(stderr)
 		if !strings.Contains(combined, "already mounted") {
-				log.Warnw("mount -a reported an error", "error", err, "stderr", combined)
-				// Capture recent kernel messages to make debugging mount issues easier
-				// without requiring a separate manual dmesg collection step.
-				dmesgCmd := "dmesg | tail -n 50 || true"
-				if dmesgOut, _, dmesgErr := sshPool.Run(ctx, node, dmesgCmd); dmesgErr == nil {
-					log.Warnw("dmesg output after mount -a failure", "dmesgTail", strings.TrimSpace(dmesgOut))
-				} else {
-					log.Warnw("failed to collect dmesg after mount -a failure", "error", dmesgErr)
-				}
+			log.Warnw("mount -a reported an error", "error", err, "stderr", combined)
+			// Capture recent kernel messages to make debugging mount issues easier
+			// without requiring a separate manual dmesg collection step.
+			dmesgCmd := "dmesg | tail -n 50 || true"
+			if dmesgOut, _, dmesgErr := sshPool.Run(ctx, node, dmesgCmd); dmesgErr == nil {
+				log.Warnw("dmesg output after mount -a failure", "dmesgTail", strings.TrimSpace(dmesgOut))
+			} else {
+				log.Warnw("failed to collect dmesg after mount -a failure", "error", dmesgErr)
+			}
 			return fmt.Errorf("mount -a failed: %w (stderr: %s)", err, stderr)
 		}
 		log.Infow("mount -a reported filesystem already mounted", "stderr", combined)
