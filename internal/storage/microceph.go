@@ -164,32 +164,84 @@ type NetworkInfo struct {
 	CIDR string // The network CIDR (e.g., "100.76.132.128/16")
 }
 
+// dockerNetworkListEntry represents a single line from `docker network ls --format json`.
+type dockerNetworkListEntry struct {
+	ID   string `json:"ID"`
+	Name string `json:"Name"`
+}
+
+// dockerNetworkInspect represents the output of `docker network inspect <id> --format json`.
+type dockerNetworkInspect struct {
+	Name string `json:"Name"`
+	IPAM struct {
+		Config []struct {
+			Subnet string `json:"Subnet"`
+		} `json:"Config"`
+	} `json:"IPAM"`
+}
+
 // getDockerSubnets retrieves all Docker network subnets from the node.
 // Returns a slice of *net.IPNet representing Docker-managed network ranges.
 // These should be excluded from IP selection since Docker IPs are not routable.
 func (p *MicroCephProvider) getDockerSubnets(ctx context.Context, sshPool *ssh.Pool, node string) []*net.IPNet {
 	log := logging.L().With("component", "microceph", "node", node)
 
-	// Get all Docker network subnets using docker network inspect
-	// This handles bridge, overlay, and custom networks dynamically
-	cmd := `docker network ls -q 2>/dev/null | xargs -r docker network inspect --format '{{range .IPAM.Config}}{{.Subnet}}{{"\n"}}{{end}}' 2>/dev/null | grep -v '^$' || true`
-	stdout, _, err := sshPool.Run(ctx, node, cmd)
-	if err != nil {
+	// Get list of Docker networks as NDJSON (one JSON object per line)
+	listCmd := "docker network ls --format json 2>/dev/null || true"
+	listOut, _, err := sshPool.Run(ctx, node, listCmd)
+	if err != nil || strings.TrimSpace(listOut) == "" {
 		// Docker may not be installed or running - that's fine
 		return nil
 	}
 
+	// Parse each line as a separate JSON object (NDJSON format)
+	var networkIDs []string
+	for _, line := range strings.Split(strings.TrimSpace(listOut), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry dockerNetworkListEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry.ID != "" {
+			networkIDs = append(networkIDs, entry.ID)
+		}
+	}
+
+	if len(networkIDs) == 0 {
+		return nil
+	}
+
 	var subnets []*net.IPNet
-	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
-		cidr := strings.TrimSpace(line)
-		if cidr == "" {
+
+	// Inspect each network to get its subnets
+	for _, netID := range networkIDs {
+		inspectCmd := fmt.Sprintf("docker network inspect %s --format json 2>/dev/null || true", netID)
+		inspectOut, _, err := sshPool.Run(ctx, node, inspectCmd)
+		if err != nil || strings.TrimSpace(inspectOut) == "" {
 			continue
 		}
-		_, ipnet, err := net.ParseCIDR(cidr)
-		if err != nil {
+
+		// docker network inspect returns a JSON array
+		var networks []dockerNetworkInspect
+		if err := json.Unmarshal([]byte(inspectOut), &networks); err != nil {
 			continue
 		}
-		subnets = append(subnets, ipnet)
+
+		for _, network := range networks {
+			for _, cfg := range network.IPAM.Config {
+				if cfg.Subnet == "" {
+					continue
+				}
+				_, ipnet, err := net.ParseCIDR(cfg.Subnet)
+				if err != nil {
+					continue
+				}
+				subnets = append(subnets, ipnet)
+			}
+		}
 	}
 
 	if len(subnets) > 0 {
@@ -1853,25 +1905,65 @@ func (p *MicroCephProvider) EnableRadosGateway(ctx context.Context, sshPool *ssh
 }
 
 // getDockerSubnetsStandalone retrieves Docker network subnets (standalone version for use outside MicroCephProvider).
+// Uses JSON parsing for reliability instead of Go templates.
 func getDockerSubnetsStandalone(ctx context.Context, sshPool *ssh.Pool, node string) []*net.IPNet {
-	cmd := `docker network ls -q 2>/dev/null | xargs -r docker network inspect --format '{{range .IPAM.Config}}{{.Subnet}}{{"\n"}}{{end}}' 2>/dev/null | grep -v '^$' || true`
-	stdout, _, err := sshPool.Run(ctx, node, cmd)
-	if err != nil {
+	// Get list of Docker networks as NDJSON (one JSON object per line)
+	listCmd := "docker network ls --format json 2>/dev/null || true"
+	listOut, _, err := sshPool.Run(ctx, node, listCmd)
+	if err != nil || strings.TrimSpace(listOut) == "" {
+		return nil
+	}
+
+	// Parse each line as a separate JSON object (NDJSON format)
+	var networkIDs []string
+	for _, line := range strings.Split(strings.TrimSpace(listOut), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry dockerNetworkListEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry.ID != "" {
+			networkIDs = append(networkIDs, entry.ID)
+		}
+	}
+
+	if len(networkIDs) == 0 {
 		return nil
 	}
 
 	var subnets []*net.IPNet
-	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
-		cidr := strings.TrimSpace(line)
-		if cidr == "" {
+
+	// Inspect each network to get its subnets
+	for _, netID := range networkIDs {
+		inspectCmd := fmt.Sprintf("docker network inspect %s --format json 2>/dev/null || true", netID)
+		inspectOut, _, err := sshPool.Run(ctx, node, inspectCmd)
+		if err != nil || strings.TrimSpace(inspectOut) == "" {
 			continue
 		}
-		_, ipnet, err := net.ParseCIDR(cidr)
-		if err != nil {
+
+		// docker network inspect returns a JSON array
+		var networks []dockerNetworkInspect
+		if err := json.Unmarshal([]byte(inspectOut), &networks); err != nil {
 			continue
 		}
-		subnets = append(subnets, ipnet)
+
+		for _, network := range networks {
+			for _, cfg := range network.IPAM.Config {
+				if cfg.Subnet == "" {
+					continue
+				}
+				_, ipnet, err := net.ParseCIDR(cfg.Subnet)
+				if err != nil {
+					continue
+				}
+				subnets = append(subnets, ipnet)
+			}
+		}
 	}
+
 	return subnets
 }
 
