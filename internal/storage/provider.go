@@ -100,8 +100,11 @@ type RadosGatewayInfo struct {
 // ClusterCredentials contains the credentials needed to mount the storage filesystem.
 // These are retrieved once from the primary node and distributed to all nodes.
 type ClusterCredentials struct {
-	AdminKey string // Ceph admin key for authentication
-	MonAddrs string // Comma-separated list of monitor addresses
+	AdminKey   string // Ceph admin key for authentication
+	MonAddrs   string // Slash-separated list of monitor addresses for mon_addr option (IP:6789/IP:6789/IP:6789)
+	FSID       string // Ceph cluster FSID (from `ceph fsid`)
+	FSName     string // CephFS filesystem name (e.g., "docker-swarm-0001")
+	MonAddrOpt string // Pre-formatted mon_addr option value (IP:6789/IP:6789/IP:6789)
 }
 
 // ClusterStatus represents the status of a storage cluster.

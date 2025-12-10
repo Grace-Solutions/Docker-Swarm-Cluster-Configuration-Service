@@ -1086,7 +1086,7 @@ func (p *MicroCephProvider) GetClusterCredentials(ctx context.Context, sshPool *
 	}
 
 	// Build monitor addresses using IP precedence (overlay IP > private IP).
-	// Format: ip1:6789,ip2:6789,ip3:6789
+	// For v2 mount syntax, we need slash-separated addresses: IP:6789/IP:6789/IP:6789
 	const monPort = 6789
 	var monAddrList []string
 
@@ -1097,18 +1097,47 @@ func (p *MicroCephProvider) GetClusterCredentials(ctx context.Context, sshPool *
 		log.Debugw("resolved MON address for CephFS", "node", monNode, "addr", addr, "port", monPort)
 	}
 
-	monAddrs := strings.Join(monAddrList, ",")
-	if monAddrs == "" {
+	if len(monAddrList) == 0 {
 		return nil, fmt.Errorf("no MON addresses resolved")
 	}
 
+	// v2 mount syntax uses slash-separated mon_addr: IP:6789/IP:6789/IP:6789
+	monAddrOpt := strings.Join(monAddrList, "/")
+	// Legacy comma-separated for backward compatibility / ceph-fuse
+	monAddrsComma := strings.Join(monAddrList, ",")
+
+	// Get the Ceph cluster FSID for v2 mount syntax
+	fsidCmd := "ceph fsid 2>/dev/null | tr -d '\\n'"
+	fsidOut, _, fsidErr := sshPool.Run(ctx, primaryNode, fsidCmd)
+	fsid := strings.TrimSpace(fsidOut)
+	if fsidErr != nil || fsid == "" {
+		log.Warnw("failed to get Ceph FSID, mount may require legacy syntax", "error", fsidErr)
+	}
+
+	// Get filesystem name (use pool name as filesystem name, since we create FS with pool name)
+	// Verify it exists via `ceph fs ls`
+	fsName := "" // Will be set from caller's poolName context
+	fsListCmd := "ceph fs ls -f json 2>/dev/null"
+	if fsListOut, _, fsListErr := sshPool.Run(ctx, primaryNode, fsListCmd); fsListErr == nil {
+		var fsList []struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal([]byte(fsListOut), &fsList) == nil && len(fsList) > 0 {
+			fsName = fsList[0].Name
+			log.Debugw("detected CephFS filesystem name", "fsName", fsName)
+		}
+	}
+
 	// Log the full admin key so we can see exactly what was retrieved on the node.
-	log.Infow("retrieved cluster credentials", "monAddrs", monAddrs, "adminKey", adminKey,
+	log.Infow("retrieved cluster credentials", "monAddrOpt", monAddrOpt, "fsid", fsid, "fsName", fsName,
 		"adminKeyLen", len(adminKey), "monCount", len(monAddrList))
 
 	return &ClusterCredentials{
-		AdminKey: adminKey,
-		MonAddrs: monAddrs,
+		AdminKey:   adminKey,
+		MonAddrs:   monAddrsComma, // Keep comma format for ceph-fuse
+		FSID:       fsid,
+		FSName:     fsName,
+		MonAddrOpt: monAddrOpt, // Slash format for kernel v2 mount
 	}, nil
 }
 
@@ -1205,7 +1234,8 @@ func (p *MicroCephProvider) MountWithCredentials(ctx context.Context, sshPool *s
 	return nil
 }
 
-// mountCephFSKernel mounts CephFS using the native kernel driver.
+// mountCephFSKernel mounts CephFS using the native kernel driver with v2 mount syntax.
+// The v2 syntax uses: mount -t ceph admin@FSID.FSNAME=/ /mount/path -o mon_addr=IP:6789/IP:6789,secret=KEY,_netdev
 func (p *MicroCephProvider) mountCephFSKernel(
 	ctx context.Context,
 	sshPool *ssh.Pool,
@@ -1214,14 +1244,27 @@ func (p *MicroCephProvider) mountCephFSKernel(
 ) error {
 	log := logging.L().With("component", "microceph", "node", node, "method", "kernel")
 
-	// Mount CephFS using kernel driver. Only use mount_timeout as it's the ONLY
-	// timeout option supported by the kernel CephFS driver.
-	// NOTE: mon_timeout is NOT a valid option and will cause mount failures.
-	mountCmd := fmt.Sprintf(
-		"sudo mount -t ceph %s:/ %s -o name=admin,secret=%s,_netdev,mount_timeout=%d",
-		creds.MonAddrs, mountPath, creds.AdminKey, cephMountTimeoutSeconds,
-	)
-	log.Infow("mounting CephFS via kernel", "monAddrs", creds.MonAddrs, "mount_timeout", cephMountTimeoutSeconds)
+	var mountCmd string
+
+	// Use v2 mount syntax if we have FSID and FSName
+	if creds.FSID != "" && creds.FSName != "" && creds.MonAddrOpt != "" {
+		// v2 syntax: mount -t ceph "admin@FSID.FSNAME=/" /path -o mon_addr=IP:6789/IP:6789,secret=KEY,_netdev
+		// Note: mon_addr uses / separator, not comma
+		mountCmd = fmt.Sprintf(
+			`sudo mount -t ceph "admin@%s.%s=/" %s -o mon_addr=%s,secret=%s,_netdev`,
+			creds.FSID, creds.FSName, mountPath, creds.MonAddrOpt, creds.AdminKey,
+		)
+		log.Infow("mounting CephFS via kernel (v2 syntax)",
+			"fsid", creds.FSID, "fsName", creds.FSName, "monAddrOpt", creds.MonAddrOpt)
+	} else {
+		// Fallback to legacy syntax if FSID/FSName not available
+		// Legacy: mount -t ceph IP:6789,IP:6789:/ /path -o name=admin,secret=KEY,_netdev,mount_timeout=30
+		mountCmd = fmt.Sprintf(
+			"sudo mount -t ceph %s:/ %s -o name=admin,secret=%s,_netdev,mount_timeout=%d",
+			creds.MonAddrs, mountPath, creds.AdminKey, cephMountTimeoutSeconds,
+		)
+		log.Infow("mounting CephFS via kernel (legacy syntax)", "monAddrs", creds.MonAddrs)
+	}
 
 	if _, stderr, err := sshPool.Run(ctx, node, mountCmd); err != nil {
 		// Capture only ceph-related kernel messages to aid in diagnosing mount failures
@@ -1287,15 +1330,21 @@ func (p *MicroCephProvider) ensureFstabAndReload(
 ) error {
 	log := logging.L().With("component", "microceph", "node", node, "mountPath", mountPath)
 
-	// Build the fstab line using MON IPs and the admin key, following the
-	// documented format and relying on Ceph's default filesystem selection
-	// when only a single filesystem exists. To prevent `mount -a` and boot
-	// from hanging indefinitely when Ceph is unavailable, we include:
-	//   - mount_timeout: the ONLY timeout option supported by kernel CephFS driver
-	//   - x-systemd.mount-timeout / x-systemd.device-timeout: systemd timeouts
-	// NOTE: mon_timeout is NOT a valid kernel CephFS option and will cause mount failures.
-	fstabEntry := fmt.Sprintf("%s:/ %s ceph name=admin,secret=%s,_netdev,mount_timeout=%d,x-systemd.mount-timeout=%s,x-systemd.device-timeout=%s 0 0",
-		creds.MonAddrs, mountPath, creds.AdminKey, cephMountTimeoutSeconds, systemdMountTimeout, systemdDeviceTimeout)
+	var fstabEntry string
+
+	// Use v2 fstab syntax if we have FSID and FSName
+	// v2: admin@FSID.FSNAME=/ /path ceph mon_addr=IP:6789/IP:6789,secret=KEY,_netdev,... 0 0
+	if creds.FSID != "" && creds.FSName != "" && creds.MonAddrOpt != "" {
+		fstabEntry = fmt.Sprintf("admin@%s.%s=/ %s ceph mon_addr=%s,secret=%s,_netdev,x-systemd.mount-timeout=%s,x-systemd.device-timeout=%s 0 0",
+			creds.FSID, creds.FSName, mountPath, creds.MonAddrOpt, creds.AdminKey, systemdMountTimeout, systemdDeviceTimeout)
+		log.Infow("using v2 fstab syntax", "fsid", creds.FSID, "fsName", creds.FSName)
+	} else {
+		// Fallback to legacy fstab syntax
+		// Legacy: IP:6789,IP:6789:/ /path ceph name=admin,secret=KEY,_netdev,mount_timeout=30,... 0 0
+		fstabEntry = fmt.Sprintf("%s:/ %s ceph name=admin,secret=%s,_netdev,mount_timeout=%d,x-systemd.mount-timeout=%s,x-systemd.device-timeout=%s 0 0",
+			creds.MonAddrs, mountPath, creds.AdminKey, cephMountTimeoutSeconds, systemdMountTimeout, systemdDeviceTimeout)
+		log.Infow("using legacy fstab syntax (FSID/FSName not available)")
+	}
 
 	// Ensure idempotency by removing any existing fstab lines that reference
 	// this mount path before appending the new, timeout-aware entry.
