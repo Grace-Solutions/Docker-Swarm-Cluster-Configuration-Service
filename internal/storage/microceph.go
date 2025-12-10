@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"clusterctl/internal/config"
+	"clusterctl/internal/ipdetect"
 	"clusterctl/internal/logging"
 	"clusterctl/internal/ssh"
 )
@@ -164,197 +165,22 @@ type NetworkInfo struct {
 	CIDR string // The network CIDR (e.g., "100.76.132.128/16")
 }
 
-// dockerNetworkListEntry represents a single line from `docker network ls --format json`.
-type dockerNetworkListEntry struct {
-	ID   string `json:"ID"`
-	Name string `json:"Name"`
-}
-
-// dockerNetworkInspect represents the output of `docker network inspect <id> --format json`.
-type dockerNetworkInspect struct {
-	Name string `json:"Name"`
-	IPAM struct {
-		Config []struct {
-			Subnet string `json:"Subnet"`
-		} `json:"Config"`
-	} `json:"IPAM"`
-}
-
-// getDockerSubnets retrieves all Docker network subnets from the node.
-// Returns a slice of *net.IPNet representing Docker-managed network ranges.
-// These should be excluded from IP selection since Docker IPs are not routable.
-func (p *MicroCephProvider) getDockerSubnets(ctx context.Context, sshPool *ssh.Pool, node string) []*net.IPNet {
-	log := logging.L().With("component", "microceph", "node", node)
-
-	// Get list of Docker networks as NDJSON (one JSON object per line)
-	listCmd := "docker network ls --format json 2>/dev/null || true"
-	listOut, _, err := sshPool.Run(ctx, node, listCmd)
-	if err != nil || strings.TrimSpace(listOut) == "" {
-		// Docker may not be installed or running - that's fine
-		return nil
-	}
-
-	// Parse each line as a separate JSON object (NDJSON format)
-	var networkIDs []string
-	for _, line := range strings.Split(strings.TrimSpace(listOut), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var entry dockerNetworkListEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue
-		}
-		if entry.ID != "" {
-			networkIDs = append(networkIDs, entry.ID)
-		}
-	}
-
-	if len(networkIDs) == 0 {
-		return nil
-	}
-
-	var subnets []*net.IPNet
-
-	// Inspect each network to get its subnets
-	for _, netID := range networkIDs {
-		inspectCmd := fmt.Sprintf("docker network inspect %s --format json 2>/dev/null || true", netID)
-		inspectOut, _, err := sshPool.Run(ctx, node, inspectCmd)
-		if err != nil || strings.TrimSpace(inspectOut) == "" {
-			continue
-		}
-
-		// docker network inspect returns a JSON array
-		var networks []dockerNetworkInspect
-		if err := json.Unmarshal([]byte(inspectOut), &networks); err != nil {
-			continue
-		}
-
-		for _, network := range networks {
-			for _, cfg := range network.IPAM.Config {
-				if cfg.Subnet == "" {
-					continue
-				}
-				_, ipnet, err := net.ParseCIDR(cfg.Subnet)
-				if err != nil {
-					continue
-				}
-				subnets = append(subnets, ipnet)
-			}
-		}
-	}
-
-	if len(subnets) > 0 {
-		subnetStrs := make([]string, len(subnets))
-		for i, s := range subnets {
-			subnetStrs[i] = s.String()
-		}
-		log.Debugw("detected Docker subnets to exclude", "subnets", subnetStrs)
-	}
-
-	return subnets
-}
-
-// isIPInDockerSubnet checks if an IP address falls within any Docker network subnet.
-func isIPInDockerSubnet(ip net.IP, dockerSubnets []*net.IPNet) bool {
-	for _, subnet := range dockerSubnets {
-		if subnet.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
-
 // detectNetworkInfo detects the appropriate network IP and CIDR for Ceph cluster communication.
+// Uses centralized ipdetect package for consistent precedence across the codebase.
 // Priority: RFC 6598 overlay (100.64.0.0/10) > RFC 1918 private > none
 // Docker network subnets are excluded since they are not routable across hosts.
-// Returns both the IP (for --mon-ip) and CIDR (for --cluster-network)
 func (p *MicroCephProvider) detectNetworkInfo(ctx context.Context, sshPool *ssh.Pool, node string) *NetworkInfo {
 	log := logging.L().With("component", "microceph", "node", node)
 
-	// First, get Docker network subnets to exclude
-	dockerSubnets := p.getDockerSubnets(ctx, sshPool, node)
-
-	// Get all IPv4 addresses with their CIDR notation
-	// Using 'ip -4 addr show' to get addresses in CIDR format
-	cmd := "ip -4 -o addr show | awk '{print $4}' | grep -v '^127\\.'"
-	stdout, stderr, err := sshPool.Run(ctx, node, cmd)
-	if err != nil {
-		log.Warnw("failed to detect network addresses", "error", err, "stderr", stderr)
+	// Use centralized IP detection from ipdetect package
+	info := ipdetect.DetectNetworkInfoSSH(ctx, sshPool, node)
+	if info == nil {
+		log.Warnw("no suitable network found for Ceph binding")
 		return nil
 	}
 
-	log.Debugw("detected network addresses", "raw", strings.TrimSpace(stdout))
-
-	var cgnatInfo, rfc1918Info *NetworkInfo
-	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-
-	for _, line := range lines {
-		cidr := strings.TrimSpace(line)
-		if cidr == "" {
-			continue
-		}
-
-		ip, _, err := net.ParseCIDR(cidr)
-		if err != nil {
-			log.Warnw("failed to parse CIDR", "cidr", cidr, "error", err)
-			continue
-		}
-
-		// Convert to 4-byte IPv4 representation (net.IP can be 4 or 16 bytes)
-		ip4 := ip.To4()
-		if ip4 == nil {
-			continue
-		}
-
-		// Skip IPs that fall within Docker network subnets
-		if isIPInDockerSubnet(ip4, dockerSubnets) {
-			log.Debugw("skipping IP in Docker subnet", "ip", ip4.String(), "cidr", cidr)
-			continue
-		}
-
-		log.Debugw("checking IP", "ip", ip4.String(), "cidr", cidr, "byte0", ip4[0], "byte1", ip4[1])
-
-		// Check RFC 6598 (CGNAT - overlay networks like Netbird/Tailscale)
-		// 100.64.0.0/10 means first byte = 100, second byte 64-127
-		if ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
-			cgnatInfo = &NetworkInfo{IP: ip4.String(), CIDR: cidr}
-			log.Infow("found RFC 6598 overlay network", "ip", ip4.String(), "cidr", cidr)
-			continue
-		}
-
-		// Check RFC 1918 private networks
-		// Priority: 10.0.0.0/8 (Class A) > 172.16.0.0/12 (Class B) > 192.168.0.0/16 (Class C)
-		if ip4[0] == 10 {
-			if rfc1918Info == nil || !strings.HasPrefix(rfc1918Info.CIDR, "10.") {
-				rfc1918Info = &NetworkInfo{IP: ip4.String(), CIDR: cidr}
-				log.Infow("found RFC 1918 Class A network", "ip", ip4.String(), "cidr", cidr)
-			}
-		} else if ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31 {
-			if rfc1918Info == nil || strings.HasPrefix(rfc1918Info.CIDR, "192.168.") {
-				rfc1918Info = &NetworkInfo{IP: ip4.String(), CIDR: cidr}
-				log.Infow("found RFC 1918 Class B network", "ip", ip4.String(), "cidr", cidr)
-			}
-		} else if ip4[0] == 192 && ip4[1] == 168 {
-			if rfc1918Info == nil {
-				rfc1918Info = &NetworkInfo{IP: ip4.String(), CIDR: cidr}
-				log.Infow("found RFC 1918 Class C network", "ip", ip4.String(), "cidr", cidr)
-			}
-		}
-	}
-
-	// Priority: RFC 6598 (overlay) > RFC 1918 (private)
-	if cgnatInfo != nil {
-		log.Infow("selected RFC 6598 overlay network for Ceph", "ip", cgnatInfo.IP, "cidr", cgnatInfo.CIDR)
-		return cgnatInfo
-	}
-	if rfc1918Info != nil {
-		log.Infow("selected RFC 1918 private network for Ceph", "ip", rfc1918Info.IP, "cidr", rfc1918Info.CIDR)
-		return rfc1918Info
-	}
-
-	log.Warnw("no suitable network found for Ceph binding")
-	return nil
+	log.Infow("selected network for Ceph", "ip", info.IP, "cidr", info.CIDR)
+	return &NetworkInfo{IP: info.IP, CIDR: info.CIDR}
 }
 
 // detectNetworkCIDR detects the appropriate network CIDR for Ceph cluster communication.
@@ -2123,211 +1949,19 @@ func (p *MicroCephProvider) EnableRadosGateway(ctx context.Context, sshPool *ssh
 	}, nil
 }
 
-// getDockerSubnetsStandalone retrieves Docker network subnets (standalone version for use outside MicroCephProvider).
-// Uses JSON parsing for reliability instead of Go templates.
-func getDockerSubnetsStandalone(ctx context.Context, sshPool *ssh.Pool, node string) []*net.IPNet {
-	// Get list of Docker networks as NDJSON (one JSON object per line)
-	listCmd := "docker network ls --format json 2>/dev/null || true"
-	listOut, _, err := sshPool.Run(ctx, node, listCmd)
-	if err != nil || strings.TrimSpace(listOut) == "" {
-		return nil
-	}
-
-	// Parse each line as a separate JSON object (NDJSON format)
-	var networkIDs []string
-	for _, line := range strings.Split(strings.TrimSpace(listOut), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var entry dockerNetworkListEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue
-		}
-		if entry.ID != "" {
-			networkIDs = append(networkIDs, entry.ID)
-		}
-	}
-
-	if len(networkIDs) == 0 {
-		return nil
-	}
-
-	var subnets []*net.IPNet
-
-	// Inspect each network to get its subnets
-	for _, netID := range networkIDs {
-		inspectCmd := fmt.Sprintf("docker network inspect %s --format json 2>/dev/null || true", netID)
-		inspectOut, _, err := sshPool.Run(ctx, node, inspectCmd)
-		if err != nil || strings.TrimSpace(inspectOut) == "" {
-			continue
-		}
-
-		// docker network inspect returns a JSON array
-		var networks []dockerNetworkInspect
-		if err := json.Unmarshal([]byte(inspectOut), &networks); err != nil {
-			continue
-		}
-
-		for _, network := range networks {
-			for _, cfg := range network.IPAM.Config {
-				if cfg.Subnet == "" {
-					continue
-				}
-				_, ipnet, err := net.ParseCIDR(cfg.Subnet)
-				if err != nil {
-					continue
-				}
-				subnets = append(subnets, ipnet)
-			}
-		}
-	}
-
-	return subnets
-}
-
-// resolveNodeIP resolves the best IP address for a node with precedence:
-// 1. Overlay IP (Netbird / Tailscale)
-// 2. Private IP (first non-loopback, non-Docker address)
-// 3. SSH node string as a final fallback
+// resolveNodeIP resolves the best IP address for a node with precedence.
+// Uses centralized ipdetect package for consistent behavior across the codebase.
+// Priority: Overlay IP > Private IP > SSH node string fallback.
 // Docker network subnets are excluded since they are not routable across hosts.
 func resolveNodeIP(ctx context.Context, sshPool *ssh.Pool, node, overlayProvider string) string {
-	log := logging.L().With("component", "resolve-ip", "node", node)
-	overlayProvider = strings.ToLower(strings.TrimSpace(overlayProvider))
-
-	// 1. Overlay IP from Netbird
-	if overlayProvider == "netbird" {
-		stdout, _, err := sshPool.Run(ctx, node, "netbird status --json")
-		if err == nil {
-			var status struct {
-				NetbirdIP string `json:"netbirdIp"`
-			}
-			if json.Unmarshal([]byte(stdout), &status) == nil {
-				if status.NetbirdIP != "" {
-					ip := strings.Split(status.NetbirdIP, "/")[0]
-					log.Debugw("using overlay IP (netbird)", "ip", ip)
-					return ip
-				}
-			}
-		}
-	} else if overlayProvider == "tailscale" {
-		// 1. Overlay IP from Tailscale
-		stdout, _, err := sshPool.Run(ctx, node, "tailscale status --json")
-		if err == nil {
-			var status struct {
-				Self struct {
-					TailscaleIPs []string `json:"TailscaleIPs"`
-				} `json:"Self"`
-			}
-			if json.Unmarshal([]byte(stdout), &status) == nil {
-				if len(status.Self.TailscaleIPs) > 0 {
-					ip := status.Self.TailscaleIPs[0]
-					log.Debugw("using overlay IP (tailscale)", "ip", ip)
-					return ip
-				}
-			}
-		}
-	}
-
-	// Get Docker subnets to exclude
-	dockerSubnets := getDockerSubnetsStandalone(ctx, sshPool, node)
-
-	// 2. Private IP (first non-loopback, non-Docker address)
-	// Use hostname -I on Linux which returns a space-separated list of addresses.
-	stdout, _, err := sshPool.Run(ctx, node, "hostname -I 2>/dev/null || hostname -i 2>/dev/null || echo ''")
-	if err == nil {
-		fields := strings.Fields(strings.TrimSpace(stdout))
-		for _, f := range fields {
-			if f == "127.0.0.1" || f == "::1" {
-				continue
-			}
-			ip := net.ParseIP(f)
-			if ip == nil {
-				continue
-			}
-			// Skip IPs in Docker subnets
-			if isIPInDockerSubnet(ip, dockerSubnets) {
-				log.Debugw("skipping IP in Docker subnet", "ip", f)
-				continue
-			}
-			log.Debugw("using private IP", "ip", f)
-			return f
-		}
-	}
-
-	// 3. Fallback to SSH node string, which is typically a hostname or IP.
-	log.Debugw("using SSH node as fallback for IP", "node", node)
-	return node
+	return ipdetect.DetectPrimarySSH(ctx, sshPool, node, overlayProvider)
 }
 
-// resolveNodeAddress resolves the best address for a node with precedence:
-// 1. Overlay hostname (netbird FQDN / tailscale DNSName)
-// 2. Overlay IP (100.x.x.x)
-// 3. Private hostname (system hostname)
-// 4. Private IP (RFC 1918)
+// resolveNodeAddress resolves the best address for a node with precedence.
+// Uses centralized ipdetect package for consistent behavior across the codebase.
+// Priority: Overlay hostname > Overlay IP > Private hostname > Private IP.
 func resolveNodeAddress(ctx context.Context, sshPool *ssh.Pool, node, overlayProvider string) string {
-	log := logging.L().With("component", "resolve-address", "node", node)
-	overlayProvider = strings.ToLower(strings.TrimSpace(overlayProvider))
-
-	// Try overlay hostname first
-	if overlayProvider == "netbird" {
-		stdout, _, err := sshPool.Run(ctx, node, "netbird status --json")
-		if err == nil {
-			var status struct {
-				FQDN      string `json:"fqdn"`
-				NetbirdIP string `json:"netbirdIp"`
-			}
-			if json.Unmarshal([]byte(stdout), &status) == nil {
-				// 1. Overlay hostname
-				if status.FQDN != "" {
-					log.Debugw("using overlay hostname", "node", node, "fqdn", status.FQDN)
-					return status.FQDN
-				}
-				// 2. Overlay IP
-				if status.NetbirdIP != "" {
-					ip := strings.Split(status.NetbirdIP, "/")[0]
-					log.Debugw("using overlay IP", "node", node, "ip", ip)
-					return ip
-				}
-			}
-		}
-	} else if overlayProvider == "tailscale" {
-		stdout, _, err := sshPool.Run(ctx, node, "tailscale status --json")
-		if err == nil {
-			var status struct {
-				Self struct {
-					DNSName      string   `json:"DNSName"`
-					TailscaleIPs []string `json:"TailscaleIPs"`
-				} `json:"Self"`
-			}
-			if json.Unmarshal([]byte(stdout), &status) == nil {
-				// 1. Overlay hostname
-				if status.Self.DNSName != "" {
-					log.Debugw("using overlay hostname", "node", node, "dnsName", status.Self.DNSName)
-					return status.Self.DNSName
-				}
-				// 2. Overlay IP
-				if len(status.Self.TailscaleIPs) > 0 {
-					log.Debugw("using overlay IP", "node", node, "ip", status.Self.TailscaleIPs[0])
-					return status.Self.TailscaleIPs[0]
-				}
-			}
-		}
-	}
-
-	// 3. Private hostname
-	stdout, _, err := sshPool.Run(ctx, node, "hostname -f 2>/dev/null || hostname")
-	if err == nil {
-		hostname := strings.TrimSpace(stdout)
-		if hostname != "" {
-			log.Debugw("using private hostname", "node", node, "hostname", hostname)
-			return hostname
-		}
-	}
-
-	// 4. Private IP (fallback to node as-is, which is typically SSH hostname/IP)
-	log.Debugw("using SSH node address as fallback", "node", node)
-	return node
+	return ipdetect.ResolveNodeAddressSSH(ctx, sshPool, node, overlayProvider)
 }
 
 // parseRadosGWUserKeys extracts access_key and secret_key from radosgw-admin user JSON output.
