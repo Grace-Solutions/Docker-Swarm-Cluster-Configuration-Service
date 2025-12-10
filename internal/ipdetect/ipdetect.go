@@ -6,7 +6,7 @@
 //
 // IP Precedence (highest to lowest):
 //  1. CGNAT 100.64.0.0/10 (overlay networks like Netbird/Tailscale)
-//  2. RFC1918 private: 10.0.0.0/8 > 172.16.0.0/12 > 192.168.0.0/16
+//  2. RFC1918 private (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 - all equal priority)
 //  3. Other non-loopback addresses
 //  4. Loopback as last resort
 //

@@ -188,21 +188,10 @@ func DetectNetworkInfoSSH(ctx context.Context, sshPool *ssh.Pool, node string) *
 			continue
 		}
 
-		// Check RFC 1918 private networks with sub-priority
+		// Check RFC 1918 private networks (all classes have equal priority)
 		if ClassifyIP(ip4) == ClassRFC1918 {
-			// Priority: 10.0.0.0/8 > 172.16.0.0/12 > 192.168.0.0/16
-			if ip4[0] == 10 {
-				if rfc1918Info == nil || !strings.HasPrefix(rfc1918Info.CIDR, "10.") {
-					rfc1918Info = &NetworkInfo{IP: ip4.String(), CIDR: cidr}
-				}
-			} else if ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31 {
-				if rfc1918Info == nil || strings.HasPrefix(rfc1918Info.CIDR, "192.168.") {
-					rfc1918Info = &NetworkInfo{IP: ip4.String(), CIDR: cidr}
-				}
-			} else if ip4[0] == 192 && ip4[1] == 168 {
-				if rfc1918Info == nil {
-					rfc1918Info = &NetworkInfo{IP: ip4.String(), CIDR: cidr}
-				}
+			if rfc1918Info == nil {
+				rfc1918Info = &NetworkInfo{IP: ip4.String(), CIDR: cidr}
 			}
 		}
 	}
