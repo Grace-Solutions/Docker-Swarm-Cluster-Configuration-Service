@@ -1,4 +1,4 @@
-# Docker Swarm Cluster Configuration Service
+# Docker Swarm Cluster Orchestration Tool
 
 `dswrmctl` (Docker Swarm Control) is a Go-based orchestrator that automates Docker Swarm cluster deployment, management, and teardown with MicroCeph distributed storage integration via SSH.
 
