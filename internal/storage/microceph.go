@@ -1024,15 +1024,27 @@ func (p *MicroCephProvider) MountWithCredentials(ctx context.Context, sshPool *s
 		return fmt.Errorf("failed to create mount directory: %w", err)
 	}
 
-	// If the mount is already present, skip the mount command but still ensure
-	// /etc/fstab is correct so the mount persists across reboots.
+	// If the mount is already present, verify it's actually responsive (not stale).
+	// A stale mount from a previous cluster with different FSID will hang on access.
 	mountCheckCmd := fmt.Sprintf("mountpoint -q %s", mountPath)
 	if _, _, err := sshPool.Run(ctx, node, mountCheckCmd); err == nil {
-		log.Infow("CephFS already mounted on node, ensuring fstab entry exists", "mountPath", mountPath)
-		if err := p.ensureFstabAndReload(ctx, sshPool, node, mountPath, poolName, creds); err != nil {
-			return err
+		// Mount exists - verify it's responsive with a quick ls (timeout 5s)
+		testCmd := fmt.Sprintf("timeout 5 ls %s >/dev/null 2>&1&& echo 'ok' || echo 'stale'", mountPath)
+		stdout, _, _ := sshPool.Run(ctx, node, testCmd)
+		if strings.Contains(stdout, "ok") {
+			log.Infow("CephFS already mounted and responsive, ensuring fstab entry exists", "mountPath", mountPath)
+			if err := p.ensureFstabAndReload(ctx, sshPool, node, mountPath, poolName, creds); err != nil {
+				return err
+			}
+			return nil
 		}
-		return nil
+		// Mount is stale - force unmount before remounting
+		log.Warnw("CephFS mount appears stale (unresponsive), forcing unmount before remount", "mountPath", mountPath)
+		unmountCmd := fmt.Sprintf("umount -f %s 2>/dev/null || umount -l %s 2>/dev/null || true", mountPath, mountPath)
+		sshPool.Run(ctx, node, unmountCmd)
+		// Also remove old fstab entry to prevent issues
+		sedCmd := fmt.Sprintf("sed -i '\\|%s|d' /etc/fstab 2>/dev/null || true", mountPath)
+		sshPool.Run(ctx, node, sedCmd)
 	}
 
 	// Detect the best mount method based on kernel capabilities

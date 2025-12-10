@@ -397,11 +397,12 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 
 	// Create scripts folder and mount helper script on shared storage
 	if len(workers) > 0 {
-		log.Infow("→ creating mount helper script on shared storage")
+		scriptFullPath := mountPath + "/scripts/mount-cephfs.sh"
+		log.Infow("→ creating mount helper script on shared storage", "path", scriptFullPath)
 		if err := createMountHelperScript(ctx, sshPool, workers[0], mountPath, clusterCreds); err != nil {
 			log.Warnw("failed to create mount helper script (non-fatal)", "error", err)
 		} else {
-			log.Infow("✓ mount helper script created", "path", mountPath+"/scripts/mount-cephfs.sh")
+			log.Infow("✓ mount helper script created", "path", scriptFullPath)
 		}
 	}
 
@@ -496,14 +497,15 @@ func writeS3CredentialsFile(path string, info *RadosGatewayInfo) error {
 
 // createMountHelperScript creates a shell script on the shared storage that can be
 // copied to any node to mount the CephFS filesystem via fstab. All values are expanded inline.
+// Uses timeout to prevent hanging if CephFS is unresponsive.
 func createMountHelperScript(ctx context.Context, sshPool *ssh.Pool, node, mountPath string, creds *ClusterCredentials) error {
 	scriptsDir := mountPath + "/scripts"
 	scriptPath := scriptsDir + "/mount-cephfs.sh"
 
-	// Create scripts directory
-	mkdirCmd := fmt.Sprintf("mkdir -p %s", scriptsDir)
-	if _, _, err := sshPool.Run(ctx, node, mkdirCmd); err != nil {
-		return fmt.Errorf("failed to create scripts directory: %w", err)
+	// Create scripts directory with timeout to avoid hanging on unresponsive mounts
+	mkdirCmd := fmt.Sprintf("timeout 30 mkdir -p %s", scriptsDir)
+	if _, stderr, err := sshPool.Run(ctx, node, mkdirCmd); err != nil {
+		return fmt.Errorf("failed to create scripts directory (timeout or error): %w (stderr: %s)", err, stderr)
 	}
 
 	// Build the script content with fstab approach
@@ -521,16 +523,16 @@ mount -a
 df -h "$MOUNT_PATH"
 `, mountPath, creds.AdminKey, creds.FSID, creds.FSName, creds.MonAddrOpt)
 
-	// Write the script via SSH
-	writeCmd := fmt.Sprintf("cat > %s << 'SCRIPT_EOF'\n%sSCRIPT_EOF", scriptPath, script)
+	// Write the script via SSH with timeout
+	writeCmd := fmt.Sprintf("timeout 30 bash -c 'cat > %s << '\"'\"'SCRIPT_EOF'\"'\"'\n%sSCRIPT_EOF'", scriptPath, script)
 	if _, stderr, err := sshPool.Run(ctx, node, writeCmd); err != nil {
-		return fmt.Errorf("failed to write script: %w (stderr: %s)", err, stderr)
+		return fmt.Errorf("failed to write script (timeout or error): %w (stderr: %s)", err, stderr)
 	}
 
-	// Make executable
-	chmodCmd := fmt.Sprintf("chmod +x %s", scriptPath)
-	if _, _, err := sshPool.Run(ctx, node, chmodCmd); err != nil {
-		return fmt.Errorf("failed to chmod script: %w", err)
+	// Make executable with timeout
+	chmodCmd := fmt.Sprintf("timeout 10 chmod +x %s", scriptPath)
+	if _, stderr, err := sshPool.Run(ctx, node, chmodCmd); err != nil {
+		return fmt.Errorf("failed to chmod script: %w (stderr: %s)", err, stderr)
 	}
 
 	return nil
