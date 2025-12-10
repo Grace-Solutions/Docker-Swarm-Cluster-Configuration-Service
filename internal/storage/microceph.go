@@ -1543,17 +1543,27 @@ func (p *MicroCephProvider) removeOSDsForNode(ctx context.Context, sshPool *ssh.
 	}
 
 	for _, d := range osdsForNode {
-		removeCmd := fmt.Sprintf("microceph disk remove %d --bypass-safety-checks", d.OSD)
-		log.Infow("removing MicroCeph OSD disk for node", "osd", d.OSD, "location", d.Location, "path", d.Path, "command", removeCmd)
-		if _, stderr, err := sshPool.Run(ctx, node, removeCmd); err != nil {
-			// If the OSD was already removed or the cluster has been torn
-			// down, treat this as best-effort and continue.
-			log.Warnw("failed to remove OSD disk (continuing)", "osd", d.OSD, "error", err, "stderr", strings.TrimSpace(stderr))
+		// Use a 30-second timeout to avoid waiting 5 minutes when cluster is unresponsive.
+		// If the cluster is healthy, disk remove should complete quickly.
+		// If it times out, we'll fall back to just purging the snap.
+		removeCmd := fmt.Sprintf("timeout 30 microceph disk remove %d --bypass-safety-checks 2>&1 || echo 'TIMEOUT_OR_ERROR'", d.OSD)
+		log.Infow("removing MicroCeph OSD disk", "osd", d.OSD, "location", d.Location, "path", d.Path, "timeout", "30s")
+		stdout, stderr, err := sshPool.Run(ctx, node, removeCmd)
+		if err != nil || strings.Contains(stdout, "TIMEOUT_OR_ERROR") || strings.Contains(stdout, "timed out") {
+			// If the OSD removal times out or fails (cluster unhealthy), skip graceful removal.
+			// The snap purge will clean up everything anyway.
+			log.Warnw("graceful OSD removal failed or timed out (will purge snap instead)", "osd", d.OSD, "error", err, "stdout", strings.TrimSpace(stdout), "stderr", strings.TrimSpace(stderr))
+		} else {
+			log.Infow("✓ OSD disk removed gracefully", "osd", d.OSD)
 		}
 	}
 }
 
 // Teardown removes MicroCeph from a node.
+// The teardown is designed to work even when the cluster is unhealthy:
+// 1. Stop local MicroCeph services first (no cluster communication needed)
+// 2. Attempt graceful OSD removal with a short timeout (30s)
+// 3. If graceful removal fails, fall back to snap purge which cleans everything
 func (p *MicroCephProvider) Teardown(ctx context.Context, sshPool *ssh.Pool, node string) error {
 	log := logging.L().With("component", "microceph", "node", node)
 
@@ -1565,20 +1575,25 @@ func (p *MicroCephProvider) Teardown(ctx context.Context, sshPool *ssh.Pool, nod
 		return nil
 	}
 
-	// Before tearing down the snap and data directories, cleanly remove any
-	// OSDs that are hosted on this node. This uses `microceph disk remove
-	// <OSD> --bypass-safety-checks` with the OSD IDs discovered from the
-	// JSON disk list so we always associate the correct IDs with each node.
+	// Step 1: Stop MicroCeph services first. This doesn't require cluster
+	// communication and ensures no local processes are running before cleanup.
+	stopCmd := "snap stop microceph 2>/dev/null || true"
+	log.Infow("stopping MicroCeph services")
+	sshPool.Run(ctx, node, stopCmd)
+
+	// Step 2: Attempt graceful OSD removal with a short timeout.
+	// If the cluster is healthy, this updates the CRUSH map properly.
+	// If the cluster is unhealthy, the timeout prevents long waits.
 	p.removeOSDsForNode(ctx, sshPool, node)
 
-	// Remove microceph snap with purge
+	// Step 3: Remove microceph snap with purge (cleans up everything)
 	removeCmd := "snap remove microceph --purge 2>/dev/null || true"
-	log.Infow("removing MicroCeph", "command", removeCmd)
+	log.Infow("removing MicroCeph snap")
 	if _, _, err := sshPool.Run(ctx, node, removeCmd); err != nil {
 		log.Warnw("failed to remove microceph snap", "error", err)
 	}
 
-	// Clean up any remaining data
+	// Step 4: Clean up any remaining data directories
 	cleanupCmds := []string{
 		"rm -rf /var/snap/microceph 2>/dev/null || true",
 		"rm -rf /var/lib/ceph 2>/dev/null || true",
