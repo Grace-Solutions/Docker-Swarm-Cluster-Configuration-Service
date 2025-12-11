@@ -26,6 +26,7 @@
           "loopDeviceThinProvision": true,
           "enableRadosGateway": false,
           "radosGatewayPort": 7480,
+          "radosGatewayMultisite": true,
           "s3BucketName": "",
           "s3CredentialsFile": ""
         }
@@ -67,34 +68,34 @@
     {
       "enabled": true,
       "sshFQDNorIP": "manager1.example.com",
+      "sshPort": 22,
       "newHostname": "swarm-manager-01",
       "username": "root",
       "password": "",
       "privateKeyPath": "",
       "privateKeyPassword": "",
       "useSSHAutomaticKeyPair": false,
-      "sshPort": 22,
       "role": "manager",
       "rebootOnCompletion": false,
       "storageEnabled": true,
       "scriptsEnabled": true,
-      "labels": { "environment": "production" }
+      "labels": { "environment": "production", "region": "us-east-1", "tier": "control-plane" }
     },
     {
       "enabled": true,
       "sshFQDNorIP": "worker1.example.com",
+      "sshPort": 22,
       "newHostname": "swarm-worker-01",
       "username": "root",
       "password": "",
       "privateKeyPath": "",
       "privateKeyPassword": "",
       "useSSHAutomaticKeyPair": false,
-      "sshPort": 22,
       "role": "worker",
       "rebootOnCompletion": false,
       "storageEnabled": true,
       "scriptsEnabled": true,
-      "labels": { "environment": "production" }
+      "labels": { "environment": "production", "region": "us-east-1", "tier": "data-plane" }
     }
   ]
 }
