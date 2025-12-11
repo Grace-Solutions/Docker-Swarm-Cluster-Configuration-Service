@@ -121,7 +121,7 @@ See `binaries/dscotctl.json.example` for a complete example. The configuration h
     "clusterName": "production-swarm",
     "overlayProvider": "netbird",
     "overlayConfig": "your-netbird-setup-key-here",
-    "servicesDir": "",
+    "serviceDefinitionDirectory": "",
     "removeSSHPublicKeyOnCompletion": false,
     "distributedStorage": {
       "enabled": true,
@@ -149,7 +149,7 @@ See `binaries/dscotctl.json.example` for a complete example. The configuration h
   - **Netbird**: Setup key (e.g., `NB_SETUP_KEY`)
   - **Tailscale**: Auth key (e.g., `TS_AUTHKEY`)
   - **WireGuard**: Interface name or config path (e.g., `wg0` or `/etc/wireguard/wg0.conf`)
-- `servicesDir`: Directory containing service YAML files (default: `services` relative to binary)
+- `serviceDefinitionDirectory`: Directory containing service definition YAML files (default: `services` relative to binary)
 - `removeSSHPublicKeyOnCompletion`: Remove SSH public key from nodes on deployment completion (default: `false`)
   - **Note**: Only affects nodes using `useSSHAutomaticKeyPair=true`
   - When `false` (default): SSH public key remains installed on nodes for future deployments

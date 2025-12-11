@@ -242,7 +242,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 	if ds.Enabled {
 		storageMountPath = ds.Providers.MicroCeph.MountPath
 	}
-	metrics, err := services.DeployServices(ctx, sshPool, primaryMaster, cfg.GlobalSettings.ServicesDir, storageMountPath)
+	metrics, err := services.DeployServices(ctx, sshPool, primaryMaster, cfg.GlobalSettings.ServiceDefinitionDirectory, storageMountPath)
 	if err != nil {
 		log.Warnw("service deployment encountered errors", "error", err)
 	}

@@ -36,35 +36,35 @@ type DeploymentMetrics struct {
 }
 
 const (
-	DefaultServicesDir = "services"
+	DefaultServiceDefinitionDirectory = "services"
 )
 
-// DiscoverServices scans the services directory for YAML files and parses metadata
-func DiscoverServices(servicesDir string) ([]ServiceMetadata, error) {
+// DiscoverServices scans the service definition directory for YAML files and parses metadata
+func DiscoverServices(serviceDefDir string) ([]ServiceMetadata, error) {
 	log := logging.L().With("component", "services")
 
-	// If servicesDir is empty, use default relative to binary
-	if servicesDir == "" {
+	// If serviceDefDir is empty, use default relative to binary
+	if serviceDefDir == "" {
 		exePath, err := os.Executable()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get executable path: %w", err)
 		}
 		binaryDir := filepath.Dir(exePath)
-		servicesDir = filepath.Join(binaryDir, DefaultServicesDir)
+		serviceDefDir = filepath.Join(binaryDir, DefaultServiceDefinitionDirectory)
 	}
 
-	log.Infow("scanning services directory", "path", servicesDir)
+	log.Infow("scanning service definition directory", "path", serviceDefDir)
 
 	// Check if directory exists
-	if _, err := os.Stat(servicesDir); os.IsNotExist(err) {
-		log.Warnw("services directory does not exist", "path", servicesDir)
+	if _, err := os.Stat(serviceDefDir); os.IsNotExist(err) {
+		log.Warnw("service definition directory does not exist", "path", serviceDefDir)
 		return []ServiceMetadata{}, nil
 	}
 
 	// Read directory
-	entries, err := os.ReadDir(servicesDir)
+	entries, err := os.ReadDir(serviceDefDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read services directory: %w", err)
+		return nil, fmt.Errorf("failed to read service definition directory: %w", err)
 	}
 
 	var services []ServiceMetadata
@@ -81,7 +81,7 @@ func DiscoverServices(servicesDir string) ([]ServiceMetadata, error) {
 			continue
 		}
 
-		filePath := filepath.Join(servicesDir, fileName)
+		filePath := filepath.Join(serviceDefDir, fileName)
 		metadata, err := parseServiceMetadata(filePath, fileName)
 		if err != nil {
 			log.Warnw("failed to parse service metadata", "file", fileName, "error", err)
@@ -146,14 +146,14 @@ func parseServiceMetadata(filePath, fileName string) (ServiceMetadata, error) {
 
 // DeployServices deploys all enabled services to the Docker Swarm cluster.
 // storageMountPath is the distributed storage mount path for path replacement in service YAMLs.
-func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, servicesDir string, storageMountPath string) (*DeploymentMetrics, error) {
+func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, serviceDefDir string, storageMountPath string) (*DeploymentMetrics, error) {
 	log := logging.L().With("component", "services")
 	metrics := &DeploymentMetrics{
 		StartTime: time.Now(),
 	}
 
 	// Discover services
-	services, err := DiscoverServices(servicesDir)
+	services, err := DiscoverServices(serviceDefDir)
 	if err != nil {
 		return metrics, fmt.Errorf("failed to discover services: %w", err)
 	}

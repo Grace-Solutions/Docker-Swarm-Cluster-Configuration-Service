@@ -185,7 +185,7 @@ type GlobalSettings struct {
 	OverlayProvider                string             `json:"overlayProvider"`                // "netbird", "tailscale", "wireguard", "none" (default: "none")
 	OverlayConfig                  string             `json:"overlayConfig"`                  // Provider-specific config (e.g., Netbird setup key, Tailscale auth key)
 	SetRootPassword                string             `json:"setRootPassword"`                // Set root password on all nodes (optional, empty = no change)
-	ServicesDir                    string             `json:"servicesDir"`                    // Directory containing service YAML files (default: "services" relative to binary)
+	ServiceDefinitionDirectory     string             `json:"serviceDefinitionDirectory"`     // Directory containing service definition YAML files (default: "services" relative to binary)
 	DistributedStorage             DistributedStorage `json:"distributedStorage"`             // Distributed storage configuration
 	PreScripts                     []ScriptConfig     `json:"preScripts"`                     // Scripts to execute before deployment
 	PostScripts                    []ScriptConfig     `json:"postScripts"`                    // Scripts to execute after deployment
