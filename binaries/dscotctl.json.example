@@ -4,6 +4,7 @@
     "overlayProvider": "netbird",
     "overlayConfig": "--setup-key 'your-netbird-setup-key-here' --allow-server-ssh --enable-ssh-remote-port-forwarding --enable-ssh-sftp --enable-ssh-root",
     "setRootPassword": "",
+    "sshKeyType": "ed25519",
     "serviceDefinitionDirectory": "",
     "removeSSHPublicKeyOnCompletion": false,
     "distributedStorage": {

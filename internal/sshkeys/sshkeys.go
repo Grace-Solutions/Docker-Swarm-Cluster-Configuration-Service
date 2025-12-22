@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/pem"
 	"fmt"
 	"os"
@@ -27,6 +28,15 @@ const (
 	PublicKeyFileName = "PublicKey.pubkey"
 	// PasswordFileName is the name of the password file
 	PasswordFileName = "PrivateKey.pwd"
+
+	// KeyTypeED25519 is the ED25519 key type (default, recommended)
+	KeyTypeED25519 = "ed25519"
+	// KeyTypeRSA is the RSA key type (for compatibility with older systems)
+	KeyTypeRSA = "rsa"
+	// DefaultKeyType is the default key type to use
+	DefaultKeyType = KeyTypeED25519
+	// RSAKeyBits is the number of bits for RSA keys (4096 for security)
+	RSAKeyBits = 4096
 )
 
 // KeyPair represents an SSH key pair.
@@ -119,9 +129,19 @@ func getLatestKeyFolder(baseDir string) (string, error) {
 }
 
 // EnsureKeyPair ensures an SSH key pair exists, generating it if necessary.
+// keyType specifies the type of key to generate: "ed25519" (default) or "rsa".
 // Returns the key pair information.
-func EnsureKeyPair(keyDir string) (*KeyPair, error) {
+func EnsureKeyPair(keyDir string, keyType string) (*KeyPair, error) {
 	log := logging.L().With("component", "sshkeys")
+
+	// Normalize and validate key type
+	if keyType == "" {
+		keyType = DefaultKeyType
+	}
+	keyType = strings.ToLower(keyType)
+	if keyType != KeyTypeED25519 && keyType != KeyTypeRSA {
+		return nil, fmt.Errorf("invalid key type %q: must be %q or %q", keyType, KeyTypeED25519, KeyTypeRSA)
+	}
 
 	// Use default key directory if not specified
 	if keyDir == "" {
@@ -194,7 +214,7 @@ func EnsureKeyPair(keyDir string) (*KeyPair, error) {
 	publicKeyPath := filepath.Join(uuidDir, PublicKeyFileName)
 	passwordPath := filepath.Join(uuidDir, PasswordFileName)
 
-	log.Infow("generating new SSH key pair", "path", privateKeyPath, "uuid", keyUUID)
+	log.Infow("generating new SSH key pair", "path", privateKeyPath, "uuid", keyUUID, "keyType", keyType)
 
 	// Generate random password for private key encryption
 	password, err := generateRandomPassword(32)
@@ -202,17 +222,41 @@ func EnsureKeyPair(keyDir string) (*KeyPair, error) {
 		return nil, fmt.Errorf("failed to generate password: %w", err)
 	}
 
-	// Generate ED25519 key pair
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate key pair: %w", err)
+	// Generate key pair based on type
+	var privateKey crypto.PrivateKey
+	var sshPublicKey ssh.PublicKey
+
+	switch keyType {
+	case KeyTypeRSA:
+		// Generate RSA key pair (4096 bits for security)
+		rsaKey, err := rsa.GenerateKey(rand.Reader, RSAKeyBits)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate RSA key pair: %w", err)
+		}
+		privateKey = rsaKey
+		sshPublicKey, err = ssh.NewPublicKey(&rsaKey.PublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create SSH public key from RSA: %w", err)
+		}
+	case KeyTypeED25519:
+		fallthrough
+	default:
+		// Generate ED25519 key pair (default)
+		pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate ED25519 key pair: %w", err)
+		}
+		privateKey = privKey
+		sshPublicKey, err = ssh.NewPublicKey(pubKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create SSH public key from ED25519: %w", err)
+		}
 	}
 
 	// Marshal private key to OpenSSH format with password encryption
-	// ssh.MarshalPrivateKeyWithPassphrase encrypts the key with the given passphrase
 	// The second parameter is a comment with ssh-<uuid> identifier, third is the passphrase
 	keyComment := fmt.Sprintf("ssh-%s", keyUUID)
-	privateKeyPEM, err := ssh.MarshalPrivateKeyWithPassphrase(crypto.PrivateKey(privateKey), keyComment, []byte(password))
+	privateKeyPEM, err := ssh.MarshalPrivateKeyWithPassphrase(privateKey, keyComment, []byte(password))
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal private key with passphrase: %w", err)
 	}
@@ -234,11 +278,7 @@ func EnsureKeyPair(keyDir string) (*KeyPair, error) {
 	}
 
 	// Generate OpenSSH format public key with ssh-<uuid> comment
-	sshPublicKey, err := ssh.NewPublicKey(publicKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create SSH public key: %w", err)
-	}
-	// MarshalAuthorizedKey returns "ssh-ed25519 AAAA...\n", we need to add comment before newline
+	// MarshalAuthorizedKey returns "ssh-ed25519 AAAA...\n" or "ssh-rsa AAAA...\n"
 	pubKeyBytes := ssh.MarshalAuthorizedKey(sshPublicKey)
 	publicKeyStr := strings.TrimSpace(string(pubKeyBytes)) + " " + keyComment + "\n"
 
@@ -251,6 +291,7 @@ func EnsureKeyPair(keyDir string) (*KeyPair, error) {
 		"privateKey", privateKeyPath,
 		"publicKey", publicKeyPath,
 		"passwordFile", passwordPath,
+		"keyType", keyType,
 		"encrypted", true,
 	)
 

@@ -409,14 +409,20 @@ func prepareSSHKeys(cfg *config.Config) (*sshkeys.KeyPair, error) {
 
 	enabledNodes := getEnabledNodes(cfg)
 
+	// Get key type from config (default: ed25519)
+	keyType := cfg.GlobalSettings.SSHKeyType
+	if keyType == "" {
+		keyType = sshkeys.DefaultKeyType
+	}
+
 	// Always generate SSH key pair for future passwordless access
 	// Even if nodes currently use password auth, we'll install the key for subsequent operations
-	keyPair, err := sshkeys.EnsureKeyPair("")
+	keyPair, err := sshkeys.EnsureKeyPair("", keyType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to ensure SSH key pair: %w", err)
 	}
 
-	log.Infow("SSH key pair ready", "privateKey", keyPair.PrivateKeyPath)
+	log.Infow("SSH key pair ready", "privateKey", keyPair.PrivateKeyPath, "keyType", keyType)
 
 	// Install public key on enabled nodes that don't already use automatic key pair
 	// (these nodes will use password/privateKeyPath for initial connection, then key for future)

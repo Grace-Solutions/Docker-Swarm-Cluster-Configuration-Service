@@ -149,6 +149,7 @@ See `binaries/dscotctl.json.example` for a complete example. The configuration h
   - **Netbird**: Setup key (e.g., `NB_SETUP_KEY`)
   - **Tailscale**: Auth key (e.g., `TS_AUTHKEY`)
   - **WireGuard**: Interface name or config path (e.g., `wg0` or `/etc/wireguard/wg0.conf`)
+- `sshKeyType`: SSH key type for auto-generation: `ed25519` (default, recommended) or `rsa` (for compatibility with older systems)
 - `serviceDefinitionDirectory`: Directory containing service definition YAML files (default: `services` relative to binary)
 - `removeSSHPublicKeyOnCompletion`: Remove SSH public key from nodes on deployment completion (default: `false`)
   - **Note**: Only affects nodes using `useSSHAutomaticKeyPair=true`
@@ -217,9 +218,10 @@ Each node supports extensive per-node configuration with overrides:
 - `username`: SSH username per node (default: `root`)
 - `password`: SSH password (use this OR `privateKeyPath` OR `useSSHAutomaticKeyPair`)
 - `privateKeyPath`: Path to SSH private key (use this OR `password` OR `useSSHAutomaticKeyPair`)
-- `useSSHAutomaticKeyPair`: Use automatically generated ED25519 key pair (default: `false`)
+- `useSSHAutomaticKeyPair`: Use automatically generated SSH key pair (default: `false`)
   - When `true`: Uses auto-generated key from `sshkeys/` directory (generated once, reused across deployments)
   - When `false`: Connects with `password` or `privateKeyPath` and installs the auto-generated public key for future use
+  - **Key Type**: Controlled by `globalSettings.sshKeyType` - `ed25519` (default) or `rsa` (4096-bit for compatibility)
   - **Key Generation**: New key pair is generated **only when**:
     - The `sshkeys/` directory doesn't exist, OR
     - The `sshkeys/` directory is empty (no UUID folders), OR
