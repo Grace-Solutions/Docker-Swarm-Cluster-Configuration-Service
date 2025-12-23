@@ -1922,8 +1922,8 @@ func (p *MicroCephProvider) EnableRadosGateway(ctx context.Context, sshPool *ssh
 		port = 7480 // Default RGW port
 	}
 
-	// Enable RGW on each OSD node by running the command ON that node with $(hostname)
-	// --multisite enables S3 object replication (realm/zonegroup/zone/sync policies)
+	// Enable RGW on each OSD node using hostname with precedence
+	// Try with --multisite first (if requested), fall back without if "unknown flag" error
 	const maxAttempts = 3
 	const retryDelay = 5 * time.Second
 	const cmdTimeout = 60 // seconds
@@ -1934,21 +1934,26 @@ func (p *MicroCephProvider) EnableRadosGateway(ctx context.Context, sshPool *ssh
 	for _, targetNode := range osdNodes {
 		nodeLog := log.With("targetNode", targetNode)
 
-		// Build command with optional --multisite flag
-		multisiteFlag := ""
-		if enableMultisite {
-			multisiteFlag = " --multisite"
-		}
-		enableCmd := fmt.Sprintf("timeout %d microceph enable rgw --port %d --target=\"$(hostname)\"%s", cmdTimeout, port, multisiteFlag)
-		nodeLog.Infow("enabling RADOS Gateway on node", "command", enableCmd)
+		// Get the hostname to use with precedence: overlay hostname > overlay IP > private hostname > private IP
+		targetHostname := resolveNodeAddress(ctx, sshPool, targetNode, overlayProvider)
+		nodeLog.Infow("resolved target hostname for RGW", "targetHostname", targetHostname)
 
 		var lastErr error
 		enabled := false
+		useMultisite := enableMultisite
 
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			// Build command with optional --multisite flag
+			multisiteFlag := ""
+			if useMultisite {
+				multisiteFlag = " --multisite"
+			}
+			enableCmd := fmt.Sprintf("timeout %d microceph enable rgw --port %d --target=\"%s\"%s", cmdTimeout, port, targetHostname, multisiteFlag)
+			nodeLog.Infow("enabling RADOS Gateway on node", "command", enableCmd, "attempt", attempt)
+
 			stdout, stderr, err := sshPool.Run(ctx, targetNode, enableCmd)
 			if err == nil {
-				nodeLog.Infow("✓ RGW enabled on node", "attempt", attempt)
+				nodeLog.Infow("✓ RGW enabled on node", "attempt", attempt, "hostname", targetHostname)
 				enabled = true
 				break
 			}
@@ -1956,9 +1961,16 @@ func (p *MicroCephProvider) EnableRadosGateway(ctx context.Context, sshPool *ssh
 			// Check if already enabled
 			combined := stdout + " " + stderr
 			if strings.Contains(strings.ToLower(combined), "already") || strings.Contains(strings.ToLower(combined), "enabled") {
-				nodeLog.Infow("RGW already enabled on node")
+				nodeLog.Infow("RGW already enabled on node", "hostname", targetHostname)
 				enabled = true
 				break
+			}
+
+			// Check if --multisite is not supported and retry without it
+			if useMultisite && strings.Contains(strings.ToLower(combined), "unknown flag") && strings.Contains(strings.ToLower(combined), "multisite") {
+				nodeLog.Warnw("--multisite flag not supported by this MicroCeph version, retrying without it")
+				useMultisite = false
+				continue // Retry immediately without multisite
 			}
 
 			lastErr = fmt.Errorf("%w (stderr: %s)", err, strings.TrimSpace(stderr))
