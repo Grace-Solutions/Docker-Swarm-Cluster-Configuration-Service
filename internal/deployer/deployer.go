@@ -104,8 +104,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 
 	// Phase 6: Setup distributed storage if enabled
 	// Storage uses Swarm roles: managers become MON nodes, workers become OSD nodes
-	storageManagers, storageWorkers := getStorageNodesByRole(cfg)
-	storageNodes := append(storageManagers, storageWorkers...)
+	storageManagers, storageWorkers, storageNodes := getStorageNodesByRole(cfg)
 	ds := cfg.GetDistributedStorage()
 	if ds.Enabled && len(storageNodes) > 0 {
 		log.Infow("Phase 6: Setting up distributed storage",
@@ -977,8 +976,10 @@ func getStorageNodes(cfg *config.Config) []string {
 
 // getStorageNodesByRole returns storage-enabled nodes categorized by role.
 // For MicroCeph: managers become MON nodes, workers become OSD nodes.
-// "both" nodes are managers that also get OSD storage (they go in both categories).
-func getStorageNodesByRole(cfg *config.Config) (managers []string, workers []string) {
+// "both" nodes are managers that also get OSD storage (they appear in both categories).
+// Returns: managers (MON), workers (OSD), allUnique (deduplicated list of all storage nodes).
+func getStorageNodesByRole(cfg *config.Config) (managers []string, workers []string, allUnique []string) {
+	seen := make(map[string]bool)
 	enabledNodes := getEnabledNodes(cfg)
 	for _, node := range enabledNodes {
 		if !node.StorageEnabled {
@@ -993,6 +994,11 @@ func getStorageNodesByRole(cfg *config.Config) (managers []string, workers []str
 			// "both" nodes act as managers for MON and also get OSD storage like workers
 			managers = append(managers, node.SSHFQDNorIP)
 			workers = append(workers, node.SSHFQDNorIP)
+		}
+		// Build deduplicated list
+		if !seen[node.SSHFQDNorIP] {
+			seen[node.SSHFQDNorIP] = true
+			allUnique = append(allUnique, node.SSHFQDNorIP)
 		}
 	}
 	return
