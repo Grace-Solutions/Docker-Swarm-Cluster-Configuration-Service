@@ -265,7 +265,8 @@ func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string,
 	}
 
 	// Deploy using docker stack deploy with --prune to remove orphaned services
-	deployCmd := fmt.Sprintf("docker stack deploy --prune -c %s %s", remoteFile, svc.Name)
+	// Use --detach=false to wait for deployment and get proper error reporting
+	deployCmd := fmt.Sprintf("docker stack deploy --prune --detach=false -c %s %s", remoteFile, svc.Name)
 
 	log.Infow("deploying Docker stack", "host", primaryMaster, "stack", svc.Name, "command", deployCmd)
 
@@ -290,19 +291,21 @@ func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string,
 // Supports both legacy GlusterFS paths and new CephFS paths.
 func replaceStoragePaths(content string, storageMountPath string) string {
 	// Common storage path patterns to replace:
-	// - /mnt/GlusterFS/... (legacy)
-	// - /mnt/glusterfs/... (legacy)
-	// - /mnt/cephfs/...
-	// - /mnt/storage/...
-	// Match pattern: /mnt/<storage-type>/<anything>/data
-	// Replace with: <storageMountPath>
+	// - /mnt/GlusterFS/cluster-name/data/ServiceName (legacy)
+	// - /mnt/GlusterFS/cluster-name/scripts (legacy)
+	// - /mnt/cephfs/cluster-name/...
+	// - /mnt/storage/cluster-name/...
+	// - /mnt/MicroCephFS/cluster-name/...
+	// The pattern captures the base mount path (up to cluster-name) and preserves subdirs after it
 
 	// Use regex to find and replace storage paths
-	// Pattern matches common distributed storage mount patterns
+	// Pattern matches: /mnt/<storage-type>/<cluster-name> and replaces with storageMountPath
+	// Preserves any paths after the cluster-name (e.g., /data/Portainer, /scripts, etc.)
 	patterns := []string{
-		`/mnt/[Gg]luster[Ff][Ss]/[^/]+/data`,  // Legacy GlusterFS
-		`/mnt/cephfs/[^/]+/data`,               // CephFS
-		`/mnt/storage/[^/]+/data`,              // Generic storage
+		`/mnt/[Gg]luster[Ff][Ss]/[^/]+`,     // Legacy GlusterFS: /mnt/GlusterFS/docker-swarm-0001
+		`/mnt/MicroCephFS/[^/]+`,            // MicroCeph: /mnt/MicroCephFS/docker-swarm-0001
+		`/mnt/cephfs/[^/]+`,                 // CephFS: /mnt/cephfs/docker-swarm-0001
+		`/mnt/storage/[^/]+`,                // Generic storage: /mnt/storage/docker-swarm-0001
 	}
 
 	replaced := content

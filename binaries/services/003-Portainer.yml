@@ -23,7 +23,6 @@ services:
       - /mnt/GlusterFS/docker-swarm-0001/data/Portainer:/data
     networks:
       - DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION
-      - DOCKER-SWARM-CLUSTER-EXTERNAL-INGRESS
     deploy:
       replicas: 1
       placement:
@@ -49,4 +48,3 @@ networks:
     external: true
   DOCKER-SWARM-CLUSTER-EXTERNAL-INGRESS:
     external: true
-
