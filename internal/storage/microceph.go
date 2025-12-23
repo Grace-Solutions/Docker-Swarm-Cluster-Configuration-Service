@@ -376,6 +376,13 @@ func (p *MicroCephProvider) AddStorage(ctx context.Context, sshPool *ssh.Pool, n
 	ds := p.cfg.GetDistributedStorage()
 	mcCfg := ds.Providers.MicroCeph
 
+	// Check if this node already has configured disks - if so, skip adding
+	configuredDisks := p.getConfiguredDisksForNode(ctx, sshPool, node)
+	if len(configuredDisks) > 0 {
+		log.Infow("✓ node already has configured OSDs, skipping disk add", "configuredCount", len(configuredDisks), "osds", configuredDisks)
+		return nil
+	}
+
 	// Get eligible disks using inclusion/exclusion patterns
 	eligibleDisks, err := p.getEligibleDisks(ctx, sshPool, node)
 	if err != nil {
@@ -1388,6 +1395,52 @@ func (p *MicroCephProvider) logDiskListJSON(ctx context.Context, sshPool *ssh.Po
 		"configured", dl.ConfiguredDisks,
 		"available", dl.AvailableDisks,
 	)
+}
+
+// getConfiguredDisksForNode returns the list of OSD IDs already configured for this node.
+// It checks the MicroCeph disk list and matches by hostname (full, short, or SSH node).
+func (p *MicroCephProvider) getConfiguredDisksForNode(ctx context.Context, sshPool *ssh.Pool, node string) []int {
+	log := logging.L().With("component", "microceph", "node", node)
+
+	// Get the node's hostname for matching
+	hostnameCmd := "hostname -f 2>/dev/null || hostname 2>/dev/null || echo ''"
+	fullHostname := ""
+	if stdout, _, err := sshPool.Run(ctx, node, hostnameCmd); err == nil {
+		fullHostname = strings.TrimSpace(stdout)
+	}
+
+	shortHostname := fullHostname
+	if idx := strings.Index(fullHostname, "."); idx > 0 {
+		shortHostname = fullHostname[:idx]
+	}
+
+	// Get microceph disk list
+	cmd := "microceph disk list --json"
+	stdout, stderr, err := sshPool.Run(ctx, node, cmd)
+	if err != nil {
+		log.Debugw("failed to get microceph disk list", "error", err, "stderr", strings.TrimSpace(stderr))
+		return nil
+	}
+
+	var dl microcephDiskList
+	if err := json.Unmarshal([]byte(stdout), &dl); err != nil {
+		log.Debugw("failed to parse microceph disk list JSON", "error", err)
+		return nil
+	}
+
+	// Find OSDs for this node
+	var osds []int
+	for _, d := range dl.ConfiguredDisks {
+		if d.Location == "" {
+			continue
+		}
+		// Match by full hostname, short hostname, or SSH node
+		if d.Location == fullHostname || d.Location == shortHostname || d.Location == node {
+			osds = append(osds, d.OSD)
+		}
+	}
+
+	return osds
 }
 
 // VerifyOSDsUpForHost verifies that at least one OSD on the given host is in "up" state.
