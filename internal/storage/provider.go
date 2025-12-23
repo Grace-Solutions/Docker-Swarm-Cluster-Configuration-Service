@@ -433,30 +433,37 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 			return fmt.Errorf("failed to enable RADOS Gateway: %w", err)
 		}
 
-		// Step 8a: Create S3 bucket if configured
-		if mcCfg.S3BucketName != "" {
-			log.Infow("→ Step 8a: Creating S3 bucket", "bucket", mcCfg.S3BucketName)
-			if err := provider.CreateS3Bucket(ctx, sshPool, workers[0], mcCfg.S3BucketName); err != nil {
-				return fmt.Errorf("failed to create S3 bucket: %w", err)
+		// If rgwInfo is nil, RGW enable failed on all nodes (non-fatal) - skip S3 bucket/credentials
+		if rgwInfo == nil {
+			log.Warnw("⚠️ Skipping S3 bucket creation - RGW not available")
+		} else {
+			// Step 8a: Create S3 bucket if configured
+			if mcCfg.S3BucketName != "" {
+				log.Infow("→ Step 8a: Creating S3 bucket", "bucket", mcCfg.S3BucketName)
+				if err := provider.CreateS3Bucket(ctx, sshPool, workers[0], mcCfg.S3BucketName); err != nil {
+					log.Warnw("⚠️ Failed to create S3 bucket (non-fatal)", "bucket", mcCfg.S3BucketName, "error", err)
+				} else {
+					rgwInfo.BucketName = mcCfg.S3BucketName
+					log.Infow("✓ S3 bucket created", "bucket", mcCfg.S3BucketName)
+				}
 			}
-			rgwInfo.BucketName = mcCfg.S3BucketName
-			log.Infow("✓ S3 bucket created", "bucket", mcCfg.S3BucketName)
-		}
 
-		// Step 8b: Write S3 credentials file if configured
-		if mcCfg.S3CredentialsFile != "" {
-			log.Infow("→ Step 8b: Writing S3 credentials file", "path", mcCfg.S3CredentialsFile)
-			if err := writeS3CredentialsFile(mcCfg.S3CredentialsFile, rgwInfo); err != nil {
-				return fmt.Errorf("failed to write S3 credentials file: %w", err)
+			// Step 8b: Write S3 credentials file if configured
+			if mcCfg.S3CredentialsFile != "" {
+				log.Infow("→ Step 8b: Writing S3 credentials file", "path", mcCfg.S3CredentialsFile)
+				if err := writeS3CredentialsFile(mcCfg.S3CredentialsFile, rgwInfo); err != nil {
+					log.Warnw("⚠️ Failed to write S3 credentials file (non-fatal)", "path", mcCfg.S3CredentialsFile, "error", err)
+				} else {
+					log.Infow("✓ S3 credentials written", "path", mcCfg.S3CredentialsFile)
+				}
 			}
-			log.Infow("✓ S3 credentials written", "path", mcCfg.S3CredentialsFile)
-		}
 
-		log.Infow("✓ RADOS Gateway (S3) enabled",
-			"endpoints", rgwInfo.Endpoints,
-			"userId", rgwInfo.UserID,
-			"accessKey", rgwInfo.AccessKey,
-			"bucket", rgwInfo.BucketName)
+			log.Infow("✓ RADOS Gateway (S3) enabled",
+				"endpoints", rgwInfo.Endpoints,
+				"userId", rgwInfo.UserID,
+				"accessKey", rgwInfo.AccessKey,
+				"bucket", rgwInfo.BucketName)
+		}
 	} else if mcCfg.EnableRadosGateway && len(workers) == 0 {
 		log.Warnw("RADOS Gateway enabled but no OSD workers available - skipping")
 	}

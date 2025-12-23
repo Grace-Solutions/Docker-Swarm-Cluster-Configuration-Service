@@ -1987,9 +1987,18 @@ func (p *MicroCephProvider) EnableRadosGateway(ctx context.Context, sshPool *ssh
 	for _, targetNode := range osdNodes {
 		nodeLog := log.With("targetNode", targetNode)
 
-		// Get the hostname to use with precedence: overlay hostname > overlay IP > private hostname > private IP
-		targetHostname := resolveNodeAddress(ctx, sshPool, targetNode, overlayProvider)
-		nodeLog.Infow("resolved target hostname for RGW", "targetHostname", targetHostname)
+		// MicroCeph --target needs the system hostname (cluster member name), NOT the overlay hostname.
+		// Get the system hostname from the node itself.
+		systemHostname := ""
+		if stdout, _, err := sshPool.Run(ctx, targetNode, "hostname 2>/dev/null || echo ''"); err == nil {
+			systemHostname = strings.TrimSpace(stdout)
+		}
+		if systemHostname == "" {
+			nodeLog.Warnw("could not determine system hostname, skipping RGW enable for node")
+			failedNodes = append(failedNodes, targetNode)
+			continue
+		}
+		nodeLog.Infow("resolved system hostname for RGW --target", "systemHostname", systemHostname)
 
 		var lastErr error
 		enabled := false
@@ -2001,12 +2010,12 @@ func (p *MicroCephProvider) EnableRadosGateway(ctx context.Context, sshPool *ssh
 			if useMultisite {
 				multisiteFlag = " --multisite"
 			}
-			enableCmd := fmt.Sprintf("timeout %d microceph enable rgw --port %d --target=\"%s\"%s", cmdTimeout, port, targetHostname, multisiteFlag)
+			enableCmd := fmt.Sprintf("timeout %d microceph enable rgw --port %d --target=\"%s\"%s", cmdTimeout, port, systemHostname, multisiteFlag)
 			nodeLog.Infow("enabling RADOS Gateway on node", "command", enableCmd, "attempt", attempt)
 
 			stdout, stderr, err := sshPool.Run(ctx, targetNode, enableCmd)
 			if err == nil {
-				nodeLog.Infow("✓ RGW enabled on node", "attempt", attempt, "hostname", targetHostname)
+				nodeLog.Infow("✓ RGW enabled on node", "attempt", attempt, "systemHostname", systemHostname)
 				enabled = true
 				break
 			}
@@ -2014,7 +2023,7 @@ func (p *MicroCephProvider) EnableRadosGateway(ctx context.Context, sshPool *ssh
 			// Check if already enabled
 			combined := stdout + " " + stderr
 			if strings.Contains(strings.ToLower(combined), "already") || strings.Contains(strings.ToLower(combined), "enabled") {
-				nodeLog.Infow("RGW already enabled on node", "hostname", targetHostname)
+				nodeLog.Infow("RGW already enabled on node", "systemHostname", systemHostname)
 				enabled = true
 				break
 			}
