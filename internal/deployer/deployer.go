@@ -228,6 +228,13 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 	}
 	log.Infow("✅ Docker Swarm setup complete", "primaryAdvertiseAddr", primaryMasterAdvertiseAddr, "primaryJoinAddr", primaryMasterJoinAddr)
 
+	// Phase 7b: Create default overlay networks
+	log.Infow("→ Creating default Docker Swarm overlay networks")
+	if err := createDefaultOverlayNetworks(ctx, sshPool, primaryMaster); err != nil {
+		return fmt.Errorf("failed to create overlay networks: %w", err)
+	}
+	log.Infow("✅ Overlay networks created")
+
 	// Phase 8: Detect geolocation and apply node labels
 	log.Infow("Phase 8: Detecting geolocation and applying node labels")
 	if err := applyNodeLabels(ctx, cfg, sshPool, primaryMaster); err != nil {
@@ -1364,13 +1371,27 @@ func applyNodeLabels(ctx context.Context, cfg *config.Config, sshPool *ssh.Pool,
 			labels[key] = value
 		}
 
+		// Determine the Docker Swarm node name (hostname, not SSH address)
+		// Use NewHostname if set, otherwise fetch the hostname from the node
+		swarmNodeName := node.NewHostname
+		if swarmNodeName == "" {
+			stdout, _, err := sshPool.Run(ctx, node.SSHFQDNorIP, "hostname 2>/dev/null")
+			if err == nil {
+				swarmNodeName = strings.TrimSpace(stdout)
+			}
+		}
+		if swarmNodeName == "" {
+			nodeLog.Warnw(formatNodeMessage("✗", node.SSHFQDNorIP, node.NewHostname, node.Role, "could not determine Docker Swarm node name, skipping labels"))
+			continue
+		}
+
 		// Apply labels to the node
-		nodeLog.Infow(formatNodeMessage("→", node.SSHFQDNorIP, node.NewHostname, node.Role, "applying labels"), "count", len(labels))
+		nodeLog.Infow(formatNodeMessage("→", node.SSHFQDNorIP, node.NewHostname, node.Role, "applying labels"), "count", len(labels), "swarmNodeName", swarmNodeName)
 		for key, value := range labels {
 			// Escape special characters in label values
 			escapedValue := strings.ReplaceAll(value, `"`, `\"`)
 			labelCmd := fmt.Sprintf(`docker node update --label-add "%s=%s" $(docker node ls --filter "name=%s" -q)`,
-				key, escapedValue, node.SSHFQDNorIP)
+				key, escapedValue, swarmNodeName)
 
 			if _, stderr, err := sshPool.Run(ctx, primaryMaster, labelCmd); err != nil {
 				nodeLog.Warnw(formatNodeMessage("✗", node.SSHFQDNorIP, node.NewHostname, node.Role, "failed to apply label"), "key", key, "value", value, "error", err, "stderr", stderr)
@@ -1519,6 +1540,58 @@ func removeOverlayNetworks(ctx context.Context, sshPool *ssh.Pool, primaryManage
 		} else {
 			log.Infow("✅ network removed", "network", network)
 		}
+	}
+
+	return nil
+}
+
+// createDefaultOverlayNetworks creates the default internal and external overlay networks via SSH.
+func createDefaultOverlayNetworks(ctx context.Context, sshPool *ssh.Pool, primaryManager string) error {
+	log := logging.L().With("component", "overlay-networks")
+
+	// Define the networks with their specs
+	networks := []struct {
+		Name     string
+		Subnet   string
+		Gateway  string
+		Internal bool
+	}{
+		{
+			Name:     swarm.DefaultInternalNetworkName,
+			Subnet:   "172.17.16.0/20",
+			Gateway:  "172.17.16.1",
+			Internal: true,
+		},
+		{
+			Name:     swarm.DefaultExternalNetworkName,
+			Subnet:   "172.17.32.0/20",
+			Gateway:  "172.17.32.1",
+			Internal: false,
+		},
+	}
+
+	for _, network := range networks {
+		// Check if network already exists
+		checkCmd := fmt.Sprintf("docker network inspect %s --format '{{.Name}}' 2>/dev/null", network.Name)
+		stdout, _, _ := sshPool.Run(ctx, primaryManager, checkCmd)
+		if strings.TrimSpace(stdout) == network.Name {
+			log.Infow("overlay network already exists", "network", network.Name)
+			continue
+		}
+
+		// Build create command
+		createCmd := fmt.Sprintf("docker network create --driver overlay --attachable --subnet %s --gateway %s",
+			network.Subnet, network.Gateway)
+		if network.Internal {
+			createCmd += " --internal"
+		}
+		createCmd += " " + network.Name
+
+		log.Infow("creating overlay network", "host", primaryManager, "network", network.Name, "command", createCmd)
+		if _, stderr, err := sshPool.Run(ctx, primaryManager, createCmd); err != nil {
+			return fmt.Errorf("failed to create network %s: %w (stderr: %s)", network.Name, err, stderr)
+		}
+		log.Infow("✅ overlay network created", "network", network.Name, "subnet", network.Subnet, "internal", network.Internal)
 	}
 
 	return nil
