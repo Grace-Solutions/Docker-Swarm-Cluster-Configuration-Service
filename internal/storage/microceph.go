@@ -2046,8 +2046,8 @@ func (p *MicroCephProvider) EnableRadosGateway(ctx context.Context, sshPool *ssh
 
 	// Create S3 user for cluster access (run on first enabled node)
 	primaryOSD := enabledNodes[0]
-	userID := "clusterctl-s3-user"
-	displayName := "Clusterctl S3 User"
+	userID := "dscotctl-s3-admin"
+	displayName := "DSCOTCTL S3 Admin"
 	createUserCmd := fmt.Sprintf("radosgw-admin user create --uid=%s --display-name=\"%s\" 2>/dev/null || radosgw-admin user info --uid=%s", userID, displayName, userID)
 	log.Infow("creating/retrieving S3 user", "userId", userID, "node", primaryOSD)
 	stdout, stderr, err := sshPool.Run(ctx, primaryOSD, createUserCmd)
@@ -2214,7 +2214,7 @@ func (p *MicroCephProvider) CreateS3Bucket(ctx context.Context, sshPool *ssh.Poo
 	}
 
 	// Get the S3 user credentials first
-	userID := "clusterctl-s3-user"
+	userID := "dscotctl-s3-admin"
 	getUserCmd := fmt.Sprintf("radosgw-admin user info --uid=%s", userID)
 	stdout, stderr, err := sshPool.Run(ctx, primaryOSD, getUserCmd)
 	if err != nil {
