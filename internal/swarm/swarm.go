@@ -230,11 +230,13 @@ func EnsureOverlayNetwork(ctx context.Context, spec NetworkSpec) error {
 
 // EnsureDefaultNetworks ensures the default internal and external overlay
 // networks exist on the primary manager. It is safe to call multiple times.
+// Uses 10.10.x.x and 10.20.x.x ranges to avoid conflicts with Docker's default
+// bridge network (172.17.0.0/16) and docker_gwbridge (172.18.0.0/16).
 func EnsureDefaultNetworks(ctx context.Context) error {
 	internal := NetworkSpec{
 		Name:     DefaultInternalNetworkName,
-		Subnet:   "172.17.16.0/20",
-		Gateway:  "172.17.16.1",
+		Subnet:   "10.10.0.0/20",
+		Gateway:  "10.10.0.1",
 		Internal: true, // Internal-only network (no external access)
 	}
 	if err := EnsureOverlayNetwork(ctx, internal); err != nil {
@@ -243,8 +245,8 @@ func EnsureDefaultNetworks(ctx context.Context) error {
 
 	external := NetworkSpec{
 		Name:     DefaultExternalNetworkName,
-		Subnet:   "172.17.32.0/20",
-		Gateway:  "172.17.32.1",
+		Subnet:   "10.20.0.0/20",
+		Gateway:  "10.20.0.1",
 		Internal: false, // External-facing network
 	}
 	if err := EnsureOverlayNetwork(ctx, external); err != nil {

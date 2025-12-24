@@ -3,7 +3,7 @@
 # ENABLED: true
 
 services:
-  nginx-ui:
+  NginxUI:
     image: 0xjacky/nginx-ui:latest
     hostname: 'Nginx-UI-{{.Task.Slot}}'
     environment:

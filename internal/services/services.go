@@ -35,6 +35,11 @@ type DeploymentMetrics struct {
 	Duration      time.Duration
 }
 
+// ClusterInfo contains information about the cluster composition for dynamic constraint handling
+type ClusterInfo struct {
+	HasDedicatedWorkers bool // true if there are nodes with role="worker" (not just managers or "both")
+}
+
 const (
 	DefaultServiceDefinitionDirectory = "services"
 )
@@ -146,11 +151,17 @@ func parseServiceMetadata(filePath, fileName string) (ServiceMetadata, error) {
 
 // DeployServices deploys all enabled services to the Docker Swarm cluster.
 // storageMountPath is the distributed storage mount path for path replacement in service YAMLs.
-func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, serviceDefDir string, storageMountPath string) (*DeploymentMetrics, error) {
+// clusterInfo contains cluster composition for dynamic constraint handling.
+func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, serviceDefDir string, storageMountPath string, clusterInfo ClusterInfo) (*DeploymentMetrics, error) {
 	log := logging.L().With("component", "services")
 	metrics := &DeploymentMetrics{
 		StartTime: time.Now(),
 	}
+
+	// Log cluster composition for constraint handling
+	log.Infow("cluster composition for constraint handling",
+		"hasDedicatedWorkers", clusterInfo.HasDedicatedWorkers,
+	)
 
 	// Discover services
 	services, err := DiscoverServices(serviceDefDir)
@@ -204,7 +215,7 @@ func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string
 			"file", svc.FileName,
 		)
 
-		if err := deployService(ctx, sshPool, primaryMaster, svc, storageMountPath); err != nil {
+		if err := deployService(ctx, sshPool, primaryMaster, svc, storageMountPath, clusterInfo); err != nil {
 			log.Errorw(fmt.Sprintf("failed to deploy service %d/%d", i+1, metrics.TotalFound),
 				"name", svc.Name,
 				"error", err,
@@ -236,7 +247,7 @@ func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string
 }
 
 // deployService deploys a single service to the Docker Swarm cluster
-func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, svc ServiceMetadata, storageMountPath string) error {
+func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, svc ServiceMetadata, storageMountPath string, clusterInfo ClusterInfo) error {
 	log := logging.L().With("component", "services", "service", svc.Name)
 
 	// Read service file
@@ -250,6 +261,13 @@ func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string,
 	if storageMountPath != "" {
 		processedContent = replaceStoragePaths(processedContent, storageMountPath)
 		log.Infow("replaced storage mount paths", "storageMountPath", storageMountPath)
+	}
+
+	// Adjust placement constraints based on cluster composition
+	// If no dedicated workers, replace node.role==worker with node.role==manager
+	processedContent, constraintChanged := adjustPlacementConstraints(processedContent, clusterInfo)
+	if constraintChanged {
+		log.Infow("adjusted placement constraints for cluster composition", "hasDedicatedWorkers", clusterInfo.HasDedicatedWorkers)
 	}
 
 	// Create temporary file on remote host
@@ -284,6 +302,30 @@ func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string,
 	}
 
 	return nil
+}
+
+// adjustPlacementConstraints modifies placement constraints in YAML content based on cluster composition.
+// If the cluster has no dedicated workers (all managers or "both"), it replaces node.role==worker
+// with node.role==manager so services can be scheduled on manager nodes.
+// Returns the modified content and a boolean indicating if changes were made.
+func adjustPlacementConstraints(content string, clusterInfo ClusterInfo) (string, bool) {
+	if clusterInfo.HasDedicatedWorkers {
+		// Cluster has dedicated workers, no adjustment needed
+		return content, false
+	}
+
+	// No dedicated workers - replace node.role==worker with node.role==manager
+	// Pattern matches various YAML formats:
+	//   - node.role==worker
+	//   - node.role == worker
+	//   - "node.role==worker"
+	pattern := regexp.MustCompile(`node\.role\s*==\s*worker`)
+	if !pattern.MatchString(content) {
+		return content, false
+	}
+
+	modified := pattern.ReplaceAllString(content, "node.role==manager")
+	return modified, true
 }
 
 // replaceStoragePaths replaces distributed storage mount paths in YAML content with the configured path.

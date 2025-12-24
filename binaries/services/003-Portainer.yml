@@ -3,12 +3,12 @@
 # ENABLED: true
 
 services:
-  portainer:
+  Portainer:
     image: portainer/portainer-ce:latest
     hostname: 'portainer-{{.Task.Slot}}'
-    command: -H tcp://tasks.portainer-agent:9001 --tlsskipverify
+    command: -H tcp://tasks.PortainerAgent:9001 --tlsskipverify
     environment:
-      PORTAINER_AGENT_ADDR: tasks.portainer-agent
+      PORTAINER_AGENT_ADDR: tasks.PortainerAgent
       LOG_LEVEL: INFO
     ports:
       - target: 9443

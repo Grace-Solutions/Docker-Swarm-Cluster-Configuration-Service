@@ -248,7 +248,12 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 	if ds.Enabled {
 		storageMountPath = ds.Providers.MicroCeph.MountPath
 	}
-	metrics, err := services.DeployServices(ctx, sshPool, primaryMaster, cfg.GlobalSettings.ServiceDefinitionDirectory, storageMountPath)
+	// Determine if cluster has dedicated workers for placement constraint handling
+	// sshWorkers only contains nodes with role="worker" (not "both" or "manager")
+	clusterInfo := services.ClusterInfo{
+		HasDedicatedWorkers: len(sshWorkers) > 0,
+	}
+	metrics, err := services.DeployServices(ctx, sshPool, primaryMaster, cfg.GlobalSettings.ServiceDefinitionDirectory, storageMountPath, clusterInfo)
 	if err != nil {
 		log.Warnw("service deployment encountered errors", "error", err)
 	}
