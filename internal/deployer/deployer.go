@@ -607,6 +607,11 @@ func installDocker(ctx context.Context, sshPool *ssh.Pool, host string) error {
 		return nil
 	}
 
+	// Fix any interrupted dpkg state before apt operations
+	// This handles "dpkg was interrupted, you must manually run 'dpkg --configure -a'" errors
+	logging.L().Debugw("repairing dpkg state if needed", "node", host)
+	sshPool.Run(ctx, host, "DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>/dev/null || true")
+
 	// Install Docker with retry logic (network downloads can be flaky)
 	retryCfg := retry.PackageManagerConfig(fmt.Sprintf("install-docker-%s", host))
 	return retry.Do(ctx, retryCfg, func() error {
@@ -738,6 +743,9 @@ func configureNetbirdOnNode(ctx context.Context, sshPool *ssh.Pool, node config.
 	stdout, _, _ = sshPool.Run(ctx, node.SSHFQDNorIP, checkInstallCmd)
 
 	if stdout != "INSTALLED\n" {
+		// Fix any interrupted dpkg state before apt operations
+		sshPool.Run(ctx, node.SSHFQDNorIP, "DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>/dev/null || true")
+
 		// Install netbird if not present (with retry)
 		installURL := "https://pkgs.netbird.io/install.sh"
 		installCmd := fmt.Sprintf("curl -fsSL %s | sh", installURL)
@@ -834,6 +842,9 @@ func configureTailscaleOnNode(ctx context.Context, sshPool *ssh.Pool, node confi
 	stdout, _, _ = sshPool.Run(ctx, node.SSHFQDNorIP, checkInstallCmd)
 
 	if stdout != "INSTALLED\n" {
+		// Fix any interrupted dpkg state before apt operations
+		sshPool.Run(ctx, node.SSHFQDNorIP, "DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>/dev/null || true")
+
 		// Install tailscale if not present (with retry)
 		installURL := "https://tailscale.com/install.sh"
 		installCmd := fmt.Sprintf("curl -fsSL %s | sh", installURL)

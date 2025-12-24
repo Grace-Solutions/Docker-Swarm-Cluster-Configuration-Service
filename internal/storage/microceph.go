@@ -861,6 +861,9 @@ func (p *MicroCephProvider) ensureCephFuseInstalled(ctx context.Context, sshPool
 
 	log.Infow("installing ceph-fuse package")
 
+	// Fix any interrupted dpkg state before apt operations
+	sshPool.Run(ctx, node, "DEBIAN_FRONTEND=noninteractive sudo dpkg --configure -a 2>/dev/null || true")
+
 	// Detect package manager and install
 	installCmd := `
 		if command -v apt-get >/dev/null 2>&1; then
@@ -2235,6 +2238,9 @@ func (p *MicroCephProvider) CreateS3Bucket(ctx context.Context, sshPool *ssh.Poo
 	}
 
 	// Create the bucket using s3cmd or aws cli
+	// Fix any interrupted dpkg state before apt operations
+	sshPool.Run(ctx, primaryOSD, "DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>/dev/null || true")
+
 	// First, try to install s3cmd if not present
 	installCmd := "which s3cmd || apt-get update -qq && apt-get install -y -qq s3cmd"
 	if _, stderr, err := sshPool.Run(ctx, primaryOSD, installCmd); err != nil {
