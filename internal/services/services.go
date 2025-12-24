@@ -258,25 +258,40 @@ func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string,
 
 	// Replace storage mount paths if storageMountPath is specified
 	processedContent := string(content)
+	modified := false
 	if storageMountPath != "" {
-		processedContent = replaceStoragePaths(processedContent, storageMountPath)
-		log.Infow("replaced storage mount paths", "storageMountPath", storageMountPath)
+		newContent := replaceStoragePaths(processedContent, storageMountPath)
+		if newContent != processedContent {
+			processedContent = newContent
+			modified = true
+			log.Infow("replaced storage mount paths", "storageMountPath", storageMountPath)
+		}
 	}
 
 	// Adjust placement constraints based on cluster composition
 	// If no dedicated workers, replace node.role==worker with node.role==manager
 	processedContent, constraintChanged := adjustPlacementConstraints(processedContent, clusterInfo)
 	if constraintChanged {
+		modified = true
 		log.Infow("adjusted placement constraints for cluster composition", "hasDedicatedWorkers", clusterInfo.HasDedicatedWorkers)
 	}
 
+	// Save modified content back to local file so it can be redeployed with dynamic settings
+	if modified {
+		if err := os.WriteFile(svc.FilePath, []byte(processedContent), 0644); err != nil {
+			log.Warnw("failed to save modified service file", "file", svc.FilePath, "error", err)
+		} else {
+			log.Infow("saved modified service file", "file", svc.FilePath)
+		}
+	}
+
 	// Create temporary file on remote host
-	remoteFile := fmt.Sprintf("/tmp/clusterctl-service-%s.yml", svc.Name)
+	remoteFile := fmt.Sprintf("/tmp/dscotctl-service-%s.yml", svc.Name)
 
 	// Write content to remote file
-	writeCmd := fmt.Sprintf("cat > %s << 'CLUSTERCTL_EOF'\n%s\nCLUSTERCTL_EOF", remoteFile, processedContent)
+	writeCmd := fmt.Sprintf("cat > %s << 'DSCOTCTL_EOF'\n%s\nDSCOTCTL_EOF", remoteFile, processedContent)
 
-	log.Infow("uploading service definition", "host", primaryMaster, "remoteFile", remoteFile, "size", len(content))
+	log.Infow("uploading service definition", "host", primaryMaster, "remoteFile", remoteFile, "size", len(processedContent))
 
 	if _, stderr, err := sshPool.Run(ctx, primaryMaster, writeCmd); err != nil {
 		return fmt.Errorf("failed to upload service file: %w (stderr: %s)", err, stderr)
