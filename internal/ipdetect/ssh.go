@@ -145,7 +145,7 @@ func DetectPrimarySSH(ctx context.Context, sshPool *ssh.Pool, node, overlayProvi
 // DetectNetworkInfoSSH detects the appropriate network IP and CIDR for cluster communication.
 // Priority: RFC 6598 overlay (100.64.0.0/10) > RFC 1918 private > none
 // Docker network subnets are excluded since they are not routable across hosts.
-// Returns both the IP (for --mon-ip) and CIDR (for --cluster-network)
+// Returns both the IP (for --mon-ip) and CIDR (for --cluster-network with proper network ID)
 func DetectNetworkInfoSSH(ctx context.Context, sshPool *ssh.Pool, node string) *NetworkInfo {
 	// First, get Docker network subnets to exclude
 	dockerSubnets := GetDockerSubnetsSSH(ctx, sshPool, node)
@@ -161,12 +161,12 @@ func DetectNetworkInfoSSH(ctx context.Context, sshPool *ssh.Pool, node string) *
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
 
 	for _, line := range lines {
-		cidr := strings.TrimSpace(line)
-		if cidr == "" {
+		hostCIDR := strings.TrimSpace(line)
+		if hostCIDR == "" {
 			continue
 		}
 
-		ip, _, err := net.ParseCIDR(cidr)
+		ip, ipnet, err := net.ParseCIDR(hostCIDR)
 		if err != nil {
 			continue
 		}
@@ -182,16 +182,20 @@ func DetectNetworkInfoSSH(ctx context.Context, sshPool *ssh.Pool, node string) *
 			continue
 		}
 
+		// Calculate the proper network CIDR (network ID, not host IP)
+		// e.g., 192.168.30.32/24 -> 192.168.30.0/24
+		networkCIDR := NetworkCIDR(ipnet)
+
 		// Check RFC 6598 (CGNAT - overlay networks like Netbird/Tailscale)
 		if ClassifyIP(ip4) == ClassCGNAT {
-			cgnatInfo = &NetworkInfo{IP: ip4.String(), CIDR: cidr}
+			cgnatInfo = &NetworkInfo{IP: ip4.String(), CIDR: networkCIDR}
 			continue
 		}
 
 		// Check RFC 1918 private networks (all classes have equal priority)
 		if ClassifyIP(ip4) == ClassRFC1918 {
 			if rfc1918Info == nil {
-				rfc1918Info = &NetworkInfo{IP: ip4.String(), CIDR: cidr}
+				rfc1918Info = &NetworkInfo{IP: ip4.String(), CIDR: networkCIDR}
 			}
 		}
 	}

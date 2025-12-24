@@ -37,8 +37,8 @@ const (
 
 // NetworkInfo contains IP and CIDR information for a network address.
 type NetworkInfo struct {
-	IP   string // The IP address (e.g., "100.76.202.130")
-	CIDR string // The CIDR notation (e.g., "100.76.202.130/32")
+	IP   string // The host IP address (e.g., "100.76.202.130")
+	CIDR string // The network CIDR notation with network ID (e.g., "100.76.202.0/24", NOT "100.76.202.130/24")
 }
 
 // DetectPrimary returns the preferred primary IPv4 address for the local node.
@@ -269,6 +269,29 @@ func SelectBestIP(ips []string, dockerSubnets []*net.IPNet) string {
 		return other[0]
 	}
 	return ""
+}
+
+// NetworkCIDR returns the proper network CIDR notation from an IPNet.
+// This converts a host address with prefix (e.g., 192.168.30.32/24) to the
+// network ID (e.g., 192.168.30.0/24) by applying the subnet mask.
+func NetworkCIDR(ipnet *net.IPNet) string {
+	if ipnet == nil {
+		return ""
+	}
+	// ipnet.IP is already the network address after ParseCIDR
+	// ipnet.Mask contains the subnet mask
+	ones, _ := ipnet.Mask.Size()
+	return ipnet.IP.String() + "/" + strconv.Itoa(ones)
+}
+
+// HostToNetworkCIDR converts a host CIDR (e.g., 192.168.30.32/24) to
+// network CIDR (e.g., 192.168.30.0/24). Returns empty string on parse error.
+func HostToNetworkCIDR(hostCIDR string) string {
+	_, ipnet, err := net.ParseCIDR(hostCIDR)
+	if err != nil {
+		return ""
+	}
+	return NetworkCIDR(ipnet)
 }
 
 // Helper functions
