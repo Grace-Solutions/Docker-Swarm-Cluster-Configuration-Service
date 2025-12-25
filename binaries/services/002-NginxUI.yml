@@ -3,10 +3,11 @@
 # ENABLED: true
 
 services:
-  # Control plane (writer) - Single instance with RW mounts
+  # Control plane (writer/master) - Single instance with RW mounts
   # Manages config via the UI on port 9000
+  # Requires: docker node update --label-add loadbalancer.master=true <NODE>
   NginxUIWriter:
-    image: uozi/nginx-ui:latest
+    image: uozi/nginx-ui:sha-4754ef3
     hostname: 'nginx-ui-writer-{{.Task.Slot}}'
     environment:
       TZ: UTC
@@ -27,7 +28,7 @@ services:
       placement:
         constraints:
           - node.platform.os==linux
-          - node.labels.nginxui.writer==true
+          - node.labels.loadbalancer.master==true
       restart_policy:
         condition: on-failure
         delay: 5s
@@ -42,10 +43,11 @@ services:
         parallelism: 1
         delay: 10s
 
-  # Data plane (readers) - Global on edge nodes with RO mounts
+  # Data plane (readers/slaves) - Global on edge nodes with RO mounts
   # Serves traffic on ports 80/443, reads config from shared storage
+  # Requires: docker node update --label-add loadbalancer.slave=true <NODE>
   NginxUIEdge:
-    image: uozi/nginx-ui:latest
+    image: uozi/nginx-ui:sha-4754ef3
     hostname: 'nginx-ui-edge-{{.Task.Slot}}'
     environment:
       TZ: UTC
@@ -71,7 +73,7 @@ services:
         constraints:
           - node.platform.os==linux
           - node.role==worker
-          - node.labels.nginxui.edge==true
+          - node.labels.loadbalancer.slave==true
       restart_policy:
         condition: on-failure
         delay: 5s
