@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -23,6 +24,7 @@ type ServiceMetadata struct {
 	Enabled     bool
 	FilePath    string
 	FileName    string
+	InitScript  string // Optional init script name (e.g., "NginxUI" runs NginxUI init before deployment)
 }
 
 // DeploymentMetrics tracks deployment statistics
@@ -142,6 +144,8 @@ func parseServiceMetadata(filePath, fileName string) (ServiceMetadata, error) {
 		} else if strings.HasPrefix(line, "ENABLED:") {
 			enabledStr := strings.TrimSpace(strings.TrimPrefix(line, "ENABLED:"))
 			metadata.Enabled = strings.ToLower(enabledStr) == "true"
+		} else if strings.HasPrefix(line, "INIT_SCRIPT:") {
+			metadata.InitScript = strings.TrimSpace(strings.TrimPrefix(line, "INIT_SCRIPT:"))
 		}
 	}
 
@@ -324,6 +328,24 @@ func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string,
 				log.Warnw("failed to create some bind mount directories", "error", err)
 				// Continue anyway - directories might already exist or be created by other means
 			}
+		}
+	}
+
+	// Run init script if specified (before deployment, after directories are created)
+	if svc.InitScript != "" && storageMountPath != "" {
+		// Determine target node for init script
+		var initNode string
+		if clusterInfo.DistributedStorageEnabled && len(clusterInfo.AllNodes) > 0 {
+			// Shared storage - only run on one node
+			initNode = clusterInfo.AllNodes[0]
+		} else {
+			// Local storage - run on primary master (could extend to all nodes if needed)
+			initNode = primaryMaster
+		}
+		log.Infow("running init script", "script", svc.InitScript, "host", initNode)
+		if err := runInitScript(ctx, sshPool, initNode, svc.InitScript, storageMountPath); err != nil {
+			log.Warnw("init script failed", "script", svc.InitScript, "error", err)
+			// Continue anyway - might be a non-critical initialization
 		}
 	}
 
@@ -809,4 +831,101 @@ func showNetworkSummary(ctx context.Context, sshPool *ssh.Pool, host string) {
 			"type", netType,
 		)
 	}
+}
+
+// runInitScript runs a service-specific initialization script before deployment.
+// Currently supports: NginxUI
+func runInitScript(ctx context.Context, sshPool *ssh.Pool, targetNode string, initScript string, storageMountPath string) error {
+	log := logging.L().With("component", "services", "initScript", initScript)
+
+	switch initScript {
+	case "NginxUI":
+		return initNginxUI(ctx, sshPool, targetNode, storageMountPath)
+	default:
+		log.Warnw("unknown init script, skipping", "script", initScript)
+		return nil
+	}
+}
+
+// initNginxUI creates required config files for NginxUI before deployment.
+// Creates: nginx.conf, mime.types, conf.d/, nginx-ui/
+func initNginxUI(ctx context.Context, sshPool *ssh.Pool, targetNode string, storageMountPath string) error {
+	log := logging.L().With("component", "services", "initScript", "NginxUI")
+	log.Infow("initializing NginxUI config files", "host", targetNode)
+
+	// Base path for NginxUI data
+	basePath := storageMountPath + "/" + defaults.ServiceDataSubdir + "/NginxUI"
+
+	// Create required directories (idempotent)
+	dirsCmd := fmt.Sprintf("mkdir -p '%s/conf.d' '%s/nginx-ui'", basePath, basePath)
+	log.Infow("creating NginxUI directories", "command", dirsCmd)
+	if _, stderr, err := sshPool.Run(ctx, targetNode, dirsCmd); err != nil {
+		return fmt.Errorf("failed to create NginxUI directories: %w (stderr: %s)", err, stderr)
+	}
+
+	// Download mime.types from nginx repo if not exists (idempotent)
+	mimeTypesPath := basePath + "/mime.types"
+	mimeTypesCmd := fmt.Sprintf(`
+if [ ! -f '%s' ]; then
+  curl -sSL -o '%s' 'https://raw.githubusercontent.com/nginx/nginx/master/conf/mime.types'
+  echo "mime.types downloaded"
+else
+  echo "mime.types already exists"
+fi
+`, mimeTypesPath, mimeTypesPath)
+	log.Infow("ensuring mime.types exists", "path", mimeTypesPath)
+	stdout, stderr, err := sshPool.Run(ctx, targetNode, mimeTypesCmd)
+	if err != nil {
+		return fmt.Errorf("failed to download mime.types: %w (stderr: %s)", err, stderr)
+	}
+	log.Infow("mime.types check", "result", strings.TrimSpace(stdout))
+
+	// Create nginx.conf if not exists (idempotent)
+	// Using base64 encoding to preserve $variables
+	nginxConf := `user  nginx;
+worker_processes  auto;
+
+error_log  /var/log/nginx/error.log notice;
+pid        /var/run/nginx.pid;
+
+events {
+    worker_connections  1024;
+}
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                      '$status $body_bytes_sent "$http_referer" '
+                      '"$http_user_agent" "$http_x_forwarded_for"';
+
+    access_log  /var/log/nginx/access.log  main;
+
+    sendfile        on;
+    keepalive_timeout  65;
+
+    include /etc/nginx/conf.d/*.conf;
+}
+`
+	nginxConfPath := basePath + "/nginx.conf"
+	// Base64 encode to preserve $variables
+	nginxConfB64 := base64.StdEncoding.EncodeToString([]byte(nginxConf))
+	nginxConfCmd := fmt.Sprintf(`
+if [ ! -f '%s' ]; then
+  echo '%s' | base64 -d > '%s'
+  echo "nginx.conf created"
+else
+  echo "nginx.conf already exists"
+fi
+`, nginxConfPath, nginxConfB64, nginxConfPath)
+	log.Infow("ensuring nginx.conf exists", "path", nginxConfPath)
+	stdout, stderr, err = sshPool.Run(ctx, targetNode, nginxConfCmd)
+	if err != nil {
+		return fmt.Errorf("failed to create nginx.conf: %w (stderr: %s)", err, stderr)
+	}
+	log.Infow("nginx.conf check", "result", strings.TrimSpace(stdout))
+
+	log.Infow("✅ NginxUI initialization complete", "host", targetNode)
+	return nil
 }
