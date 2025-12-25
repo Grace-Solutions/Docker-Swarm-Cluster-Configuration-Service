@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"clusterctl/internal/defaults"
 	"clusterctl/internal/logging"
 	"clusterctl/internal/ssh"
 )
@@ -228,6 +229,14 @@ func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string
 				"name", svc.Name,
 			)
 			metrics.TotalSuccess++
+		}
+	}
+
+	// Upload enabled service definitions to distributed storage
+	if storageMountPath != "" {
+		log.Infow("uploading service definitions to distributed storage")
+		if err := uploadServiceDefinitions(ctx, sshPool, primaryMaster, services, storageMountPath); err != nil {
+			log.Warnw("failed to upload some service definitions", "error", err)
 		}
 	}
 
@@ -461,6 +470,83 @@ func ensureDirectoriesOnNodes(ctx context.Context, sshPool *ssh.Pool, nodes []st
 	if len(errors) > 0 {
 		return fmt.Errorf("failed to create directories on some nodes: %s", strings.Join(errors, "; "))
 	}
+
+	return nil
+}
+
+// uploadServiceDefinitions uploads enabled service YAML files to the distributed storage.
+// Files are stored in the ServiceDefinitions subdirectory under the storage mount path.
+// If storageMountPath is empty, this function does nothing.
+func uploadServiceDefinitions(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, services []ServiceMetadata, storageMountPath string) error {
+	if storageMountPath == "" {
+		return nil
+	}
+
+	log := logging.L().With("component", "services")
+
+	// Filter to enabled services only
+	var enabledServices []ServiceMetadata
+	for _, svc := range services {
+		if svc.Enabled {
+			enabledServices = append(enabledServices, svc)
+		}
+	}
+
+	if len(enabledServices) == 0 {
+		log.Infow("no enabled services to upload")
+		return nil
+	}
+
+	// Build the destination directory path
+	destDir := filepath.ToSlash(filepath.Join(storageMountPath, defaults.ServiceDefinitionsSubdir))
+
+	// Create the directory on the primary master (will be available on all nodes via shared storage)
+	mkdirCmd := fmt.Sprintf("mkdir -p '%s'", destDir)
+	log.Infow("creating service definitions directory", "host", primaryMaster, "path", destDir)
+	if _, stderr, err := sshPool.Run(ctx, primaryMaster, mkdirCmd); err != nil {
+		return fmt.Errorf("failed to create service definitions directory: %w (stderr: %s)", err, stderr)
+	}
+
+	// Upload each enabled service file
+	var errors []string
+	for _, svc := range enabledServices {
+		// Read the local file content
+		content, err := os.ReadFile(svc.FilePath)
+		if err != nil {
+			log.Warnw("failed to read service file", "file", svc.FilePath, "error", err)
+			errors = append(errors, fmt.Sprintf("%s: %v", svc.Name, err))
+			continue
+		}
+
+		// Build remote file path
+		remoteFile := fmt.Sprintf("%s/%s", destDir, svc.FileName)
+
+		// Write content to remote file using heredoc
+		writeCmd := fmt.Sprintf("cat > '%s' << 'DSCOTCTL_EOF'\n%s\nDSCOTCTL_EOF", remoteFile, string(content))
+
+		log.Infow("uploading service definition",
+			"service", svc.Name,
+			"host", primaryMaster,
+			"remotePath", remoteFile,
+			"size", len(content),
+		)
+
+		if _, stderr, err := sshPool.Run(ctx, primaryMaster, writeCmd); err != nil {
+			log.Warnw("failed to upload service definition", "service", svc.Name, "error", err, "stderr", stderr)
+			errors = append(errors, fmt.Sprintf("%s: %v", svc.Name, err))
+		} else {
+			log.Infow("✅ service definition uploaded", "service", svc.Name, "remotePath", remoteFile)
+		}
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("failed to upload some service definitions: %s", strings.Join(errors, "; "))
+	}
+
+	log.Infow("✅ all service definitions uploaded",
+		"count", len(enabledServices),
+		"destination", destDir,
+	)
 
 	return nil
 }

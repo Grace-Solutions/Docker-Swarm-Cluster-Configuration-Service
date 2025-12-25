@@ -57,6 +57,9 @@ const (
 	// ServiceDataSubdir is the subdirectory under the storage mount for service data.
 	ServiceDataSubdir = "data"
 
+	// ServiceDefinitionsSubdir is the subdirectory for storing service YAML definitions.
+	ServiceDefinitionsSubdir = "ServiceDefinitions"
+
 	// CephLoopDeviceDirectory is the default directory for loop device image files.
 	CephLoopDeviceDirectory = "/var/snap/microceph/common"
 
