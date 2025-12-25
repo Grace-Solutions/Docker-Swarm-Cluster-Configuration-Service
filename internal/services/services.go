@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -365,95 +366,165 @@ func replaceStoragePaths(content string, storageMountPath string) string {
 	return re.ReplaceAllString(content, storageMountPath)
 }
 
+// ServiceInfo represents Docker service information from JSON output.
+type ServiceInfo struct {
+	ID       string `json:"ID"`
+	Name     string `json:"Name"`
+	Mode     string `json:"Mode"`
+	Replicas string `json:"Replicas"`
+	Image    string `json:"Image"`
+}
+
+// NetworkInfo represents Docker network information from JSON output.
+type NetworkInfo struct {
+	Name     string `json:"Name"`
+	Scope    string `json:"Scope"`
+	Driver   string `json:"Driver"`
+	Ingress  bool   `json:"Ingress"`
+	Internal bool   `json:"Internal"`
+	IPAM     struct {
+		Config []struct {
+			Subnet  string `json:"Subnet"`
+			Gateway string `json:"Gateway"`
+		} `json:"Config"`
+	} `json:"IPAM"`
+}
+
 // verifyDeployment shows verification info for a deployed service including
-// service status, network info, and recent logs.
+// service status, network info, and recent logs. Uses JSON output from Docker
+// for reliable parsing.
 func verifyDeployment(ctx context.Context, sshPool *ssh.Pool, host string, stackName string) {
 	log := logging.L().With("component", "services", "stack", stackName)
 
-	// Get service list for this stack
-	serviceListCmd := fmt.Sprintf("docker service ls --filter name=%s --format '{{.ID}}\\t{{.Name}}\\t{{.Mode}}\\t{{.Replicas}}\\t{{.Image}}'", stackName)
+	// Get all services filtered by stack label (more reliable than name filter)
+	// Use JSON format for proper parsing
+	serviceListCmd := fmt.Sprintf("docker service ls --filter label=com.docker.stack.namespace=%s --format json", stackName)
 	log.Infow("→ verifying deployment", "command", serviceListCmd)
 
 	stdout, _, err := sshPool.Run(ctx, host, serviceListCmd)
 	if err != nil {
 		log.Warnw("failed to get service list", "error", err)
-	} else if strings.TrimSpace(stdout) != "" {
-		lines := strings.Split(strings.TrimSpace(stdout), "\n")
-		for _, line := range lines {
-			parts := strings.Split(line, "\t")
-			if len(parts) >= 5 {
-				log.Infow("  service status",
-					"id", parts[0],
-					"name", parts[1],
-					"mode", parts[2],
-					"replicas", parts[3],
-					"image", parts[4],
-				)
+		return
+	}
+
+	// Parse JSON lines (each line is a separate JSON object)
+	var serviceNames []string
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var svc ServiceInfo
+		if err := json.Unmarshal([]byte(line), &svc); err != nil {
+			log.Warnw("failed to parse service JSON", "line", line, "error", err)
+			continue
+		}
+		log.Infow("  service status",
+			"id", svc.ID,
+			"name", svc.Name,
+			"mode", svc.Mode,
+			"replicas", svc.Replicas,
+			"image", svc.Image,
+		)
+		serviceNames = append(serviceNames, svc.Name)
+	}
+
+	// Get networks used by services in this stack using JSON
+	// Collect unique network IDs from all services
+	networkIDs := make(map[string]bool)
+	for _, svcName := range serviceNames {
+		inspectCmd := fmt.Sprintf("docker service inspect %s --format json", svcName)
+		stdout, _, err := sshPool.Run(ctx, host, inspectCmd)
+		if err != nil {
+			continue
+		}
+		// Parse the service inspect output to get network IDs
+		// The output is a JSON array with one element
+		var inspectResult []struct {
+			Spec struct {
+				TaskTemplate struct {
+					Networks []struct {
+						Target string `json:"Target"`
+					} `json:"Networks"`
+				} `json:"TaskTemplate"`
+			} `json:"Spec"`
+		}
+		if err := json.Unmarshal([]byte(stdout), &inspectResult); err != nil {
+			continue
+		}
+		if len(inspectResult) > 0 {
+			for _, net := range inspectResult[0].Spec.TaskTemplate.Networks {
+				networkIDs[net.Target] = true
 			}
 		}
 	}
 
-	// Get networks used by services in this stack
-	networkCmd := fmt.Sprintf("docker service inspect %s_%s --format '{{range .Spec.TaskTemplate.Networks}}{{.Target}} {{end}}' 2>/dev/null || docker service inspect %s --format '{{range .Spec.TaskTemplate.Networks}}{{.Target}} {{end}}' 2>/dev/null || echo ''", stackName, stackName, stackName)
-	stdout, _, err = sshPool.Run(ctx, host, networkCmd)
-	if err == nil && strings.TrimSpace(stdout) != "" {
-		networkIDs := strings.Fields(strings.TrimSpace(stdout))
-		for _, netID := range networkIDs {
-			// Get network details
-			netDetailCmd := fmt.Sprintf("docker network inspect %s --format '{{.Name}}|{{range .IPAM.Config}}{{.Subnet}}{{end}}|{{.Ingress}}|{{.Internal}}'", netID)
-			netOut, _, nerr := sshPool.Run(ctx, host, netDetailCmd)
-			if nerr == nil && strings.TrimSpace(netOut) != "" {
-				parts := strings.Split(strings.TrimSpace(netOut), "|")
-				if len(parts) >= 4 {
-					netType := "overlay"
-					if parts[2] == "true" {
-						netType = "ingress"
-					} else if parts[3] == "true" {
-						netType = "internal"
-					}
-					log.Infow("  network",
-						"name", parts[0],
-						"subnet", parts[1],
-						"type", netType,
-					)
+	// Get details for each network using JSON
+	for netID := range networkIDs {
+		netInspectCmd := fmt.Sprintf("docker network inspect %s --format json", netID)
+		stdout, _, err := sshPool.Run(ctx, host, netInspectCmd)
+		if err != nil {
+			continue
+		}
+		// Output is a JSON array
+		var networks []NetworkInfo
+		if err := json.Unmarshal([]byte(stdout), &networks); err != nil {
+			continue
+		}
+		if len(networks) > 0 {
+			net := networks[0]
+			netType := "overlay"
+			if net.Ingress {
+				netType = "ingress"
+			} else if net.Internal {
+				netType = "internal"
+			}
+			subnet := ""
+			if len(net.IPAM.Config) > 0 {
+				subnet = net.IPAM.Config[0].Subnet
+			}
+			log.Infow("  network",
+				"name", net.Name,
+				"subnet", subnet,
+				"type", netType,
+			)
+		}
+	}
+
+	// Get recent logs for each service
+	for _, svcName := range serviceNames {
+		logsCmd := fmt.Sprintf("docker service logs --tail 5 --no-trunc %s 2>&1", svcName)
+		log.Infow("→ recent logs", "command", fmt.Sprintf("docker service logs --tail 5 %s", svcName))
+		stdout, _, err := sshPool.Run(ctx, host, logsCmd)
+		if err == nil && strings.TrimSpace(stdout) != "" && !strings.Contains(stdout, "no logs available") {
+			logLines := strings.Split(strings.TrimSpace(stdout), "\n")
+			maxLines := 5
+			if len(logLines) < maxLines {
+				maxLines = len(logLines)
+			}
+			for i := 0; i < maxLines; i++ {
+				line := logLines[i]
+				if len(line) > 200 {
+					line = line[:200] + "..."
 				}
+				log.Infow("  log", "service", svcName, "line", line)
 			}
-		}
-	}
-
-	// Get recent logs (last 5 lines) for services in this stack
-	logsCmd := fmt.Sprintf("docker service logs --tail 5 --no-trunc %s_%s 2>&1 || docker service logs --tail 5 --no-trunc %s 2>&1 || echo 'no logs available'", stackName, stackName, stackName)
-	log.Infow("→ recent logs", "command", fmt.Sprintf("docker service logs --tail 5 %s", stackName))
-	stdout, _, err = sshPool.Run(ctx, host, logsCmd)
-	if err == nil && strings.TrimSpace(stdout) != "" {
-		logLines := strings.Split(strings.TrimSpace(stdout), "\n")
-		// Show at most 5 lines
-		maxLines := 5
-		if len(logLines) < maxLines {
-			maxLines = len(logLines)
-		}
-		for i := 0; i < maxLines; i++ {
-			// Truncate long lines
-			line := logLines[i]
-			if len(line) > 200 {
-				line = line[:200] + "..."
-			}
-			log.Infow("  log", "line", line)
 		}
 	}
 }
 
 // showNetworkSummary displays a summary of all Docker networks at the end of deployment.
+// Uses JSON output from Docker for reliable parsing.
 func showNetworkSummary(ctx context.Context, sshPool *ssh.Pool, host string) {
 	log := logging.L().With("component", "services")
 
-	// Get all networks with their subnets
-	networkCmd := "docker network ls --format '{{.Name}}' | xargs -I {} docker network inspect {} --format '{{.Name}}|{{range .IPAM.Config}}{{.Subnet}}{{end}}|{{.Driver}}|{{.Ingress}}|{{.Internal}}' 2>/dev/null"
-	log.Infow("=== Network Summary ===", "command", "docker network ls + inspect")
+	// Get all networks in JSON format
+	networkListCmd := "docker network ls --format json"
+	log.Infow("=== Network Summary ===", "command", networkListCmd)
 
-	stdout, _, err := sshPool.Run(ctx, host, networkCmd)
+	stdout, _, err := sshPool.Run(ctx, host, networkListCmd)
 	if err != nil {
-		log.Warnw("failed to get network summary", "error", err)
+		log.Warnw("failed to get network list", "error", err)
 		return
 	}
 
@@ -462,33 +533,57 @@ func showNetworkSummary(ctx context.Context, sshPool *ssh.Pool, host string) {
 		return
 	}
 
+	// Parse JSON lines and get details for each network
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
 	for _, line := range lines {
-		parts := strings.Split(line, "|")
-		if len(parts) >= 5 {
-			name := parts[0]
-			subnet := parts[1]
-			driver := parts[2]
-			isIngress := parts[3] == "true"
-			isInternal := parts[4] == "true"
-
-			netType := driver
-			if isIngress {
-				netType = "ingress"
-			} else if isInternal {
-				netType = "internal"
-			}
-
-			// Skip networks without subnets (like host, none)
-			if subnet == "" {
-				continue
-			}
-
-			log.Infow("  network",
-				"name", name,
-				"subnet", subnet,
-				"type", netType,
-			)
+		if strings.TrimSpace(line) == "" {
+			continue
 		}
+		var netBasic struct {
+			Name   string `json:"Name"`
+			Driver string `json:"Driver"`
+		}
+		if err := json.Unmarshal([]byte(line), &netBasic); err != nil {
+			continue
+		}
+
+		// Get full network details using JSON inspect
+		inspectCmd := fmt.Sprintf("docker network inspect %s --format json", netBasic.Name)
+		stdout, _, err := sshPool.Run(ctx, host, inspectCmd)
+		if err != nil {
+			continue
+		}
+
+		var networks []NetworkInfo
+		if err := json.Unmarshal([]byte(stdout), &networks); err != nil {
+			continue
+		}
+		if len(networks) == 0 {
+			continue
+		}
+
+		net := networks[0]
+		subnet := ""
+		if len(net.IPAM.Config) > 0 {
+			subnet = net.IPAM.Config[0].Subnet
+		}
+
+		// Skip networks without subnets (like host, none)
+		if subnet == "" {
+			continue
+		}
+
+		netType := net.Driver
+		if net.Ingress {
+			netType = "ingress"
+		} else if net.Internal {
+			netType = "internal"
+		}
+
+		log.Infow("  network",
+			"name", net.Name,
+			"subnet", subnet,
+			"type", netType,
+		)
 	}
 }
