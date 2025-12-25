@@ -12,15 +12,15 @@ services:
       - target: 9000
         published: 9000
         protocol: tcp
-        mode: ingress
+        mode: host
       - target: 80
         published: 80
         protocol: tcp
-        mode: ingress
+        mode: host
       - target: 443
         published: 443
         protocol: tcp
-        mode: ingress
+        mode: host
     volumes:
       - /mnt/GlusterFS/docker-swarm-0001/data/NginxUI:/etc/nginx
       - /mnt/GlusterFS/docker-swarm-0001/data/NginxUI/app:/app
@@ -28,7 +28,7 @@ services:
       - DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION
       - DOCKER-SWARM-CLUSTER-EXTERNAL-INGRESS
     deploy:
-      replicas: 3
+      mode: global
       placement:
         constraints:
           - node.platform.os==linux
