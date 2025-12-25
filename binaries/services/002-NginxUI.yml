@@ -1,19 +1,56 @@
 # NAME: NginxUI
-# DESCRIPTION: Nginx UI - Web-based Nginx management interface
+# DESCRIPTION: Nginx UI - Single-writer (control plane) + multi-reader (edge) pattern
 # ENABLED: true
-# INIT_SCRIPT: NginxUI
 
 services:
-  NginxUI:
-    image: uozi/nginx-ui:sha-4754ef3
-    hostname: 'Nginx-UI-{{.Task.Slot}}'
+  # Control plane (writer) - Single instance with RW mounts
+  # Manages config via the UI on port 9000
+  NginxUIWriter:
+    image: uozi/nginx-ui:latest
+    hostname: 'nginx-ui-writer-{{.Task.Slot}}'
     environment:
       TZ: UTC
     ports:
+      # UI port only - accessible via ingress routing mesh
       - target: 9000
         published: 9000
         protocol: tcp
         mode: ingress
+    volumes:
+      # RW mounts - ONLY this service writes
+      - /mnt/MicroCephFS/docker-swarm-0001/data/NginxUI:/etc/nginx
+      - /mnt/MicroCephFS/docker-swarm-0001/data/NginxUI/nginx-ui:/etc/nginx-ui
+    networks:
+      - DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.platform.os==linux
+          - node.labels.nginxui.writer==true
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        order: stop-first
+      rollback_config:
+        parallelism: 1
+        delay: 10s
+
+  # Data plane (readers) - Global on edge nodes with RO mounts
+  # Serves traffic on ports 80/443, reads config from shared storage
+  NginxUIEdge:
+    image: uozi/nginx-ui:latest
+    hostname: 'nginx-ui-edge-{{.Task.Slot}}'
+    environment:
+      TZ: UTC
+    ports:
+      # HTTP/HTTPS traffic via ingress routing mesh
       - target: 80
         published: 80
         protocol: tcp
@@ -23,8 +60,9 @@ services:
         protocol: tcp
         mode: ingress
     volumes:
-      - /mnt/MicroCephFS/docker-swarm-0001/data/NginxUI:/etc/nginx
-      - /mnt/MicroCephFS/docker-swarm-0001/data/NginxUI/nginx-ui:/etc/nginx-ui
+      # RO mounts - edge MUST NOT write to prevent corruption
+      - /mnt/MicroCephFS/docker-swarm-0001/data/NginxUI:/etc/nginx:ro
+      - /mnt/MicroCephFS/docker-swarm-0001/data/NginxUI/nginx-ui:/etc/nginx-ui:ro
     networks:
       - DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION
     deploy:
@@ -33,6 +71,7 @@ services:
         constraints:
           - node.platform.os==linux
           - node.role==worker
+          - node.labels.nginxui.edge==true
       restart_policy:
         condition: on-failure
         delay: 5s
