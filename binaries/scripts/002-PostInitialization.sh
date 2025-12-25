@@ -1,5 +1,5 @@
 #!/bin/bash
-# PostInitialization.sh - Runs after all services are deployed
+# 002-PostInitialization.sh - Runs after all services are deployed
 # Environment variables available:
 #   STORAGE_MOUNT_PATH     - Base storage mount path (e.g., /mnt/MicroCephFS/docker-swarm-0001)
 #   SERVICE_DATA_DIR       - Service data subdirectory name (e.g., "data")

@@ -46,6 +46,7 @@ type ClusterInfo struct {
 
 const (
 	DefaultServiceDefinitionDirectory = "services"
+	DefaultScriptsDirectory           = "scripts"
 )
 
 // DiscoverServices scans the service definition directory for YAML files and parses metadata
@@ -206,7 +207,7 @@ func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string
 	}
 
 	// Run pre-initialization script before deploying services
-	if err := runInitializationScript(ctx, sshPool, primaryMaster, serviceDefDir, "PreInitialization.sh", storageMountPath, clusterInfo, nil); err != nil {
+	if err := runInitializationScript(ctx, sshPool, primaryMaster, serviceDefDir, "001-PreInitialization.sh", storageMountPath, clusterInfo, nil); err != nil {
 		log.Warnw("pre-initialization script failed", "error", err)
 		// Continue anyway - services may still deploy successfully
 	}
@@ -255,7 +256,7 @@ func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string
 
 	// Run post-initialization script after all services are deployed
 	if len(deployedStacks) > 0 {
-		if err := runInitializationScript(ctx, sshPool, primaryMaster, serviceDefDir, "PostInitialization.sh", storageMountPath, clusterInfo, deployedStacks); err != nil {
+		if err := runInitializationScript(ctx, sshPool, primaryMaster, serviceDefDir, "002-PostInitialization.sh", storageMountPath, clusterInfo, deployedStacks); err != nil {
 			log.Warnw("post-initialization script failed", "error", err)
 			// Continue anyway - services are already deployed
 		}
@@ -828,21 +829,25 @@ func showNetworkSummary(ctx context.Context, sshPool *ssh.Pool, host string) {
 }
 
 // runInitializationScript uploads and executes a shell script on the target node with environment variables.
-// scriptName should be either "PreInitialization.sh" or "PostInitialization.sh".
-// deployedStacks is only used for PostInitialization.sh to pass the list of deployed stack names.
+// scriptName should be either "001-PreInitialization.sh" or "002-PostInitialization.sh".
+// deployedStacks is only used for post-initialization to pass the list of deployed stack names.
 func runInitializationScript(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, serviceDefDir string, scriptName string, storageMountPath string, clusterInfo ClusterInfo, deployedStacks []string) error {
 	log := logging.L().With("component", "services", "script", scriptName)
 
-	// Look for script in the service definition directory
-	scriptPath := filepath.Join(serviceDefDir, scriptName)
-
-	// If serviceDefDir is empty, use default relative to binary
-	if serviceDefDir == "" {
+	// Scripts are in a "scripts" folder next to the "services" folder
+	// If serviceDefDir is provided (e.g., /path/to/services), look for scripts in sibling folder
+	var scriptPath string
+	if serviceDefDir != "" {
+		// serviceDefDir points to "services", scripts are in sibling "scripts" folder
+		parentDir := filepath.Dir(serviceDefDir)
+		scriptPath = filepath.Join(parentDir, DefaultScriptsDirectory, scriptName)
+	} else {
+		// Use default relative to binary
 		exePath, err := os.Executable()
 		if err != nil {
 			return fmt.Errorf("failed to get executable path: %w", err)
 		}
-		scriptPath = filepath.Join(filepath.Dir(exePath), DefaultServiceDefinitionDirectory, scriptName)
+		scriptPath = filepath.Join(filepath.Dir(exePath), DefaultScriptsDirectory, scriptName)
 	}
 
 	// Read script content

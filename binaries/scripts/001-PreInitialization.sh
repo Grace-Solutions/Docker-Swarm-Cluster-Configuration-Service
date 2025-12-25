@@ -1,5 +1,5 @@
 #!/bin/bash
-# PreInitialization.sh - Runs before service deployment
+# 001-PreInitialization.sh - Runs before service deployment
 # Environment variables available:
 #   STORAGE_MOUNT_PATH     - Base storage mount path (e.g., /mnt/MicroCephFS/docker-swarm-0001)
 #   SERVICE_DATA_DIR       - Service data subdirectory name (e.g., "data")
