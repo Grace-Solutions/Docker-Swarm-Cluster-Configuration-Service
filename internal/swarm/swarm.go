@@ -175,7 +175,7 @@ type NetworkSpec = defaults.NetworkConfig
 // Network name constants - aliases for defaults package for backward compatibility.
 const (
 	DefaultInternalNetworkName = defaults.InternalNetworkName
-	DefaultExternalNetworkName = defaults.ExternalNetworkName
+	DefaultIngressNetworkName  = defaults.DefaultIngressNetworkName
 )
 
 // getNetworkSubnet returns the subnet of an existing Docker network, or empty string if not found.
@@ -234,14 +234,8 @@ func EnsureOverlayNetwork(ctx context.Context, spec NetworkSpec) error {
 		}
 	}
 
-	// Build create command
-	args := []string{"network", "create", "--driver", "overlay"}
-	if spec.Ingress {
-		args = append(args, "--ingress")
-	} else {
-		// Only attachable for non-ingress networks (ingress networks cannot be attachable)
-		args = append(args, "--attachable")
-	}
+	// Build create command - always attachable for our overlay networks
+	args := []string{"network", "create", "--driver", "overlay", "--attachable"}
 	if spec.Internal {
 		args = append(args, "--internal")
 	}
@@ -266,30 +260,17 @@ func EnsureOverlayNetwork(ctx context.Context, spec NetworkSpec) error {
 	if spec.Internal {
 		netType = "internal-only"
 	}
-	if spec.Ingress {
-		netType = "ingress"
-	}
 	log.Infow("✅ swarm overlay network created", "name", spec.Name, "subnet", spec.Subnet, "gateway", spec.Gateway, "type", netType)
 	return nil
 }
 
-// EnsureDefaultNetworks ensures the default internal and external overlay
-// networks exist on the primary manager. It is safe to call multiple times.
+// EnsureDefaultNetworks ensures the default internal overlay network exists
+// on the primary manager. It is safe to call multiple times.
 // Network configurations are defined in the defaults package.
-// The external network is created as an ingress network for routing mesh,
-// and the default "ingress" network is removed.
+// Note: We use Docker's default ingress network for routing mesh.
 func EnsureDefaultNetworks(ctx context.Context) error {
-	log := logging.L()
-
-	// First, remove the default "ingress" network to free up the ingress slot
-	// Docker only allows one ingress network at a time
-	log.Infow("checking for default ingress network to replace")
-	if err := removeNetwork(ctx, "ingress"); err != nil {
-		log.Warnw("could not remove default ingress network (may have services attached)", "error", err)
-		// Continue anyway - our network might still work as non-ingress
-	}
-
 	// Create all default networks from centralized config
+	// This only includes the internal network; ingress is Docker's default
 	for _, network := range defaults.AllNetworks() {
 		if err := EnsureOverlayNetwork(ctx, network); err != nil {
 			return err

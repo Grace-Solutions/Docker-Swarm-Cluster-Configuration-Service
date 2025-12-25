@@ -1544,9 +1544,9 @@ func unmountDistributedStorage(ctx context.Context, sshPool *ssh.Pool, nodes []s
 func removeOverlayNetworks(ctx context.Context, sshPool *ssh.Pool, primaryManager string) error {
 	log := logging.L().With("component", "teardown-networks")
 
+	// Only remove the internal network we created; leave Docker's default ingress alone
 	networks := []string{
 		swarm.DefaultInternalNetworkName,
-		swarm.DefaultExternalNetworkName,
 	}
 
 	for _, network := range networks {
@@ -1562,22 +1562,14 @@ func removeOverlayNetworks(ctx context.Context, sshPool *ssh.Pool, primaryManage
 	return nil
 }
 
-// createDefaultOverlayNetworks creates the default internal and external overlay networks via SSH.
+// createDefaultOverlayNetworks creates the default internal overlay network via SSH.
 // Network configurations are defined in the defaults package.
-// The external network is created as an ingress network for routing mesh.
+// Note: We use Docker's default ingress network for routing mesh, so we don't create a custom one.
 func createDefaultOverlayNetworks(ctx context.Context, sshPool *ssh.Pool, primaryManager string) error {
 	log := logging.L().With("component", "overlay-networks")
 
-	// First, remove the default "ingress" network to free up the ingress slot
-	// Docker only allows one ingress network at a time
-	log.Infow("checking for default ingress network to replace")
-	removeIngressCmd := "docker network rm ingress 2>/dev/null || true"
-	log.Infow("removing default ingress network", "command", removeIngressCmd)
-	if _, stderr, err := sshPool.Run(ctx, primaryManager, removeIngressCmd); err != nil {
-		log.Warnw("could not remove default ingress network (may have services attached)", "error", err, "stderr", stderr)
-	}
-
 	// Use centralized network configs from defaults package
+	// This only includes the internal network; ingress is Docker's default
 	for _, network := range defaults.AllNetworks() {
 		// Check if network already exists with correct subnet
 		checkSubnetCmd := fmt.Sprintf("docker network inspect %s --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}' 2>/dev/null", network.Name)
@@ -1598,15 +1590,9 @@ func createDefaultOverlayNetworks(ctx context.Context, sshPool *ssh.Pool, primar
 			}
 		}
 
-		// Build create command
-		createCmd := "docker network create --driver overlay"
-		if network.Ingress {
-			createCmd += " --ingress"
-		} else {
-			// Only attachable for non-ingress networks (ingress cannot be attachable)
-			createCmd += " --attachable"
-		}
-		createCmd += fmt.Sprintf(" --subnet %s --gateway %s", network.Subnet, network.Gateway)
+		// Build create command - always attachable for our internal network
+		createCmd := fmt.Sprintf("docker network create --driver overlay --attachable --subnet %s --gateway %s",
+			network.Subnet, network.Gateway)
 		if network.Internal {
 			createCmd += " --internal"
 		}
@@ -1618,9 +1604,7 @@ func createDefaultOverlayNetworks(ctx context.Context, sshPool *ssh.Pool, primar
 		}
 
 		netType := "overlay"
-		if network.Ingress {
-			netType = "ingress"
-		} else if network.Internal {
+		if network.Internal {
 			netType = "internal"
 		}
 		log.Infow("✅ overlay network created", "network", network.Name, "subnet", network.Subnet, "type", netType)

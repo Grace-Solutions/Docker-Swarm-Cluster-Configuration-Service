@@ -26,7 +26,6 @@ services:
       - /mnt/GlusterFS/docker-swarm-0001/data/NginxUI/app:/app
     networks:
       - DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION
-      - DOCKER-SWARM-CLUSTER-EXTERNAL-INGRESS
     deploy:
       mode: global
       placement:
@@ -49,7 +48,5 @@ services:
 
 networks:
   DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION:
-    external: true
-  DOCKER-SWARM-CLUSTER-EXTERNAL-INGRESS:
     external: true
 

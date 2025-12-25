@@ -11,8 +11,9 @@ const (
 	// InternalNetworkName is the name of the internal overlay network for inter-service communication.
 	InternalNetworkName = "DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION"
 
-	// ExternalNetworkName is the name of the external ingress network for routing mesh.
-	ExternalNetworkName = "DOCKER-SWARM-CLUSTER-EXTERNAL-INGRESS"
+	// DefaultIngressNetworkName is Docker's default ingress network name.
+	// We use the default ingress network instead of creating a custom one.
+	DefaultIngressNetworkName = "ingress"
 )
 
 // NetworkConfig holds the configuration for a Docker overlay network.
@@ -21,7 +22,6 @@ type NetworkConfig struct {
 	Subnet   string
 	Gateway  string
 	Internal bool // If true, network is internal-only (no external access)
-	Ingress  bool // If true, network is the swarm ingress network for routing mesh
 }
 
 // InternalNetwork returns the default configuration for the internal overlay network.
@@ -32,28 +32,14 @@ func InternalNetwork() NetworkConfig {
 		Subnet:   "10.10.0.0/20",
 		Gateway:  "10.10.0.1",
 		Internal: true,
-		Ingress:  false,
 	}
 }
 
-// ExternalNetwork returns the default configuration for the external ingress network.
-// Uses 10.20.0.0/20 to avoid conflicts with Docker's default bridge (172.17.0.0/16).
-// This is the ingress network for routing mesh.
-func ExternalNetwork() NetworkConfig {
-	return NetworkConfig{
-		Name:     ExternalNetworkName,
-		Subnet:   "10.20.0.0/20",
-		Gateway:  "10.20.0.1",
-		Internal: false,
-		Ingress:  true,
-	}
-}
-
-// AllNetworks returns all default overlay network configurations.
+// AllNetworks returns all default overlay network configurations that we create.
+// Note: This does NOT include the default Docker ingress network which is managed by Docker.
 func AllNetworks() []NetworkConfig {
 	return []NetworkConfig{
 		InternalNetwork(),
-		ExternalNetwork(),
 	}
 }
 
