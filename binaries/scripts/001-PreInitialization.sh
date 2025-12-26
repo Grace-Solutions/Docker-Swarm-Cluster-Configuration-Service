@@ -25,14 +25,15 @@ fi
 BASE_PATH="${STORAGE_MOUNT_PATH}/${SERVICE_DATA_DIR}"
 
 # =============================================================================
-# NginxUI Pre-Initialization
+# NginxUI Pre-Initialization (Per-Node Directories)
 # =============================================================================
-echo "[PreInit] Initializing NginxUI..."
+echo "[PreInit] Initializing NginxUI for node: ${NODE_HOSTNAME}..."
 
-NGINX_PATH="${BASE_PATH}/NginxUI"
+# Each node gets its own directory to avoid write contention
+NGINX_PATH="${BASE_PATH}/NginxUI/${NODE_HOSTNAME}"
 
 # Create all required directories for NginxUI self-check
-echo "[PreInit] Creating NginxUI directories..."
+echo "[PreInit] Creating NginxUI directories at ${NGINX_PATH}..."
 mkdir -p "${NGINX_PATH}/conf.d"
 mkdir -p "${NGINX_PATH}/nginx-ui"
 mkdir -p "${NGINX_PATH}/sites-available"
