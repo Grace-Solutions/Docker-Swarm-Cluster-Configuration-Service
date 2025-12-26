@@ -39,6 +39,13 @@
       "removeStorage": false,
       "removeDockerSwarm": true
     },
+    "keepalived": {
+      "enabled": false,
+      "vip": "auto",
+      "interface": "auto",
+      "routerId": 51,
+      "authPass": "auto"
+    },
     "preScripts": [
       {
         "enabled": false,
@@ -80,6 +87,7 @@
       "rebootOnCompletion": false,
       "storageEnabled": true,
       "scriptsEnabled": true,
+      "keepalived": { "enabled": true, "priority": "auto", "state": "auto" },
       "labels": { "environment": "production", "region": "us-east-1", "tier": "control-plane", "loadbalancer": "true" }
     },
     {
@@ -96,6 +104,7 @@
       "rebootOnCompletion": false,
       "storageEnabled": true,
       "scriptsEnabled": true,
+      "keepalived": { "enabled": true, "priority": "auto", "state": "auto" },
       "labels": { "environment": "production", "region": "us-east-1", "tier": "data-plane", "loadbalancer": "true" }
     }
   ]

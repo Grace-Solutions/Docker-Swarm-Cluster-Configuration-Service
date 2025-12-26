@@ -243,6 +243,25 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 	}
 	log.Infow("✅ Node labels applied")
 
+	// Phase 8b: Configure Keepalived for high availability (if enabled)
+	if cfg.IsKeepalivedEnabled() {
+		log.Infow("Phase 8b: Configuring Keepalived for high availability")
+		keepalivedDeployment, err := services.PrepareKeepalivedDeployment(ctx, sshPool, cfg)
+		if err != nil {
+			log.Warnw("failed to prepare Keepalived deployment", "error", err)
+		} else if keepalivedDeployment.Enabled {
+			if err := services.InstallAndConfigureKeepalived(ctx, sshPool, keepalivedDeployment); err != nil {
+				log.Warnw("failed to configure Keepalived", "error", err)
+			} else {
+				log.Infow("✅ Keepalived configured",
+					"vip", keepalivedDeployment.VIPCIDR,
+					"interface", keepalivedDeployment.Interface,
+					"nodeCount", len(keepalivedDeployment.Nodes),
+				)
+			}
+		}
+	}
+
 	// Phase 9: Deploy services from YAML files
 	log.Infow("Phase 9: Deploying services")
 	storageMountPath := ""

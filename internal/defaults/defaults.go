@@ -109,3 +109,25 @@ const (
 	OverlayProviderNone = "none"
 )
 
+// =============================================================================
+// Keepalived / VRRP Defaults
+// =============================================================================
+
+const (
+	// KeepalivedRouterID is the default VRRP router ID.
+	KeepalivedRouterID = 51
+
+	// KeepalivedBasePriority is the starting priority for auto-assignment.
+	// First node gets this priority, subsequent nodes decrement by 1.
+	KeepalivedBasePriority = 100
+
+	// KeepalivedAuthPassLength is the length of auto-generated auth passwords.
+	KeepalivedAuthPassLength = 8
+
+	// KeepalivedVRRPInstance is the default VRRP instance name.
+	KeepalivedVRRPInstance = "VI_DOCKER_SWARM"
+
+	// KeepalivedAdvertInterval is the advertisement interval in seconds.
+	KeepalivedAdvertInterval = 1
+)
+

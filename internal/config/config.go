@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"clusterctl/internal/defaults"
 )
@@ -190,10 +191,29 @@ type GlobalSettings struct {
 	SSHKeyType                     string             `json:"sshKeyType"`                     // SSH key type for auto-generation: "ed25519" (default) or "rsa"
 	ServiceDefinitionDirectory     string             `json:"serviceDefinitionDirectory"`     // Directory containing service definition YAML files (default: "services" relative to binary)
 	DistributedStorage             DistributedStorage `json:"distributedStorage"`             // Distributed storage configuration
+	Keepalived                     KeepalivedConfig   `json:"keepalived"`                     // Keepalived/VRRP high availability configuration
 	PreScripts                     []ScriptConfig     `json:"preScripts"`                     // Scripts to execute before deployment
 	PostScripts                    []ScriptConfig     `json:"postScripts"`                    // Scripts to execute after deployment
 	RemoveSSHPublicKeyOnCompletion bool               `json:"removeSSHPublicKeyOnCompletion"` // Remove SSH public key from nodes on completion (default: false)
 	Decommissioning                Decommissioning    `json:"decommissioning"`                // Cluster teardown/decommissioning settings
+}
+
+// KeepalivedConfig contains global Keepalived/VRRP settings for high availability.
+type KeepalivedConfig struct {
+	// Enabled globally enables Keepalived on nodes with per-node keepalived.enabled=true
+	Enabled bool `json:"enabled"`
+	// VIP is the virtual IP address for the VRRP cluster.
+	// Use "auto" or "automatic" to auto-detect an unused IP via ARP scanning.
+	// Must be on an RFC1918 network (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16).
+	VIP string `json:"vip"`
+	// Interface is the network interface for VRRP.
+	// Use "auto" or "automatic" to auto-detect the RFC1918 interface.
+	Interface string `json:"interface"`
+	// RouterID is the VRRP router ID (1-255). Default: 51.
+	RouterID int `json:"routerId"`
+	// AuthPass is the VRRP authentication password.
+	// Use "auto" or "automatic" to generate a random password.
+	AuthPass string `json:"authPass"`
 }
 
 // NodeConfig represents a single node's configuration.
@@ -226,8 +246,25 @@ type NodeConfig struct {
 	// Script Execution
 	ScriptsEnabled bool `json:"scriptsEnabled"` // Enable script execution on this node (default: true)
 
+	// Keepalived Settings (per-node)
+	Keepalived NodeKeepalivedConfig `json:"keepalived"` // Per-node Keepalived settings
+
 	// Custom Labels
 	Labels map[string]string `json:"labels"` // Custom Docker node labels (key-value pairs)
+}
+
+// NodeKeepalivedConfig contains per-node Keepalived settings.
+type NodeKeepalivedConfig struct {
+	// Enabled includes this node in the VRRP cluster.
+	// Requires globalSettings.keepalived.enabled=true to take effect.
+	Enabled bool `json:"enabled"`
+	// Priority is the VRRP priority for this node (1-254, higher = more likely master).
+	// Use "auto" or "automatic" to auto-assign based on node order.
+	// Default: auto-assigned based on node order (first enabled=100, decrements by 1).
+	Priority string `json:"priority"`
+	// State is the initial VRRP state: "MASTER" or "BACKUP".
+	// Use "auto" or "automatic" to auto-assign (first enabled=MASTER, rest=BACKUP).
+	State string `json:"state"`
 }
 
 // Load loads the configuration from a JSON file.
@@ -423,4 +460,36 @@ func (d *Decommissioning) ShouldRemoveDockerSwarm() bool {
 		return *d.RemoveDockerSwarm
 	}
 	return true
+}
+
+// GetKeepalived returns the global Keepalived configuration.
+func (c *Config) GetKeepalived() *KeepalivedConfig {
+	return &c.GlobalSettings.Keepalived
+}
+
+// IsKeepalivedEnabled returns true if Keepalived is globally enabled.
+func (c *Config) IsKeepalivedEnabled() bool {
+	return c.GlobalSettings.Keepalived.Enabled
+}
+
+// GetKeepalivedNodes returns all nodes that have Keepalived enabled.
+// Only returns nodes if global Keepalived is also enabled.
+func (c *Config) GetKeepalivedNodes() []NodeConfig {
+	if !c.IsKeepalivedEnabled() {
+		return nil
+	}
+	var keepalivedNodes []NodeConfig
+	for _, node := range c.Nodes {
+		if node.IsEnabled() && node.Keepalived.Enabled {
+			keepalivedNodes = append(keepalivedNodes, node)
+		}
+	}
+	return keepalivedNodes
+}
+
+// IsAutoValue checks if a string value indicates auto-detection.
+// Matches "auto" or "automatic" (case-insensitive).
+func IsAutoValue(value string) bool {
+	v := strings.ToLower(strings.TrimSpace(value))
+	return v == "auto" || v == "automatic"
 }
