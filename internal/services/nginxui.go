@@ -516,6 +516,19 @@ func UpdateNginxUIClusterConfig(ctx context.Context, sshPool *ssh.Pool, storageP
 		log.Infow(line)
 	}
 
+	// Restart the hub container to pick up the new cluster config
+	log.Infow("restarting NginxUI hub container to apply cluster config",
+		"containerID", hubContainer.ContainerID[:12],
+		"node", hubContainer.NodeHostname,
+	)
+	restartCmd := fmt.Sprintf("docker restart %s", hubContainer.ContainerID)
+	if _, stderr, err := sshPool.Run(ctx, hubContainer.NodeHostname, restartCmd); err != nil {
+		log.Warnw("failed to restart hub container", "error", err, "stderr", stderr)
+		// Don't fail - config is written, container can be manually restarted
+	} else {
+		log.Infow("✅ NginxUI hub container restarted")
+	}
+
 	return nil
 }
 
