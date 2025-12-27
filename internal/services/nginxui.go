@@ -298,6 +298,15 @@ func PrepareNginxUIDeployment(ctx context.Context, sshPool *ssh.Pool, primaryMas
 		}
 	}
 
+	// Log NginxUI access URLs for each load balancer node
+	if len(nodes) > 0 {
+		log.Infow("=== NginxUI Management Access URLs ===")
+		for _, node := range nodes {
+			log.Infow(fmt.Sprintf("  http://%s/nginxui/", node.Hostname))
+		}
+		log.Infow("Default credentials: admin / admin (change after first login)")
+	}
+
 	log.Infow("✅ NginxUI deployment preparation complete")
 	return config, nil
 }
