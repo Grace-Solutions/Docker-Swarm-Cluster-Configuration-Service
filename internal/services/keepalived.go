@@ -379,14 +379,20 @@ func findUnusedVIP(ctx context.Context, sshPool *ssh.Pool, host, ifaceIP, cidrPr
 		log.Infow("arping verified", "output", strings.TrimSpace(stdout))
 	}
 
-	// Detect the network interface for the reference IP
-	detectIfaceCmd := fmt.Sprintf("ip route get %s 2>/dev/null | grep -oP 'dev \\K\\S+' | head -1", ifaceIP)
+	// Detect the network interface for ARP scan
+	// We can't use ifaceIP directly because routing to your own IP returns 'lo' (loopback)
+	// Instead, use the broadcast-1 address (the VIP we'll likely pick) to find the right interface
+	probeIP := uint32ToIP(ipToUint32(broadcastAddr) - 1)
+	detectIfaceCmd := fmt.Sprintf("ip route get %s 2>/dev/null | grep -oP 'dev \\K\\S+' | head -1", probeIP.String())
 	ifaceOut, _, err := sshPool.Run(ctx, host, detectIfaceCmd)
 	if err != nil || strings.TrimSpace(ifaceOut) == "" {
-		return "", fmt.Errorf("failed to detect interface for IP %s", ifaceIP)
+		return "", fmt.Errorf("failed to detect interface for probe IP %s", probeIP.String())
 	}
 	detectedIface := strings.TrimSpace(ifaceOut)
-	log.Infow("using interface for ARP scan", "interface", detectedIface)
+	if detectedIface == "lo" {
+		return "", fmt.Errorf("interface detection returned loopback for probe IP %s - network may be misconfigured", probeIP.String())
+	}
+	log.Infow("using interface for ARP scan", "interface", detectedIface, "probeIP", probeIP.String())
 
 	// Start from broadcast-1 and work down (prefer high IPs for VIPs)
 	startTime := time.Now()
