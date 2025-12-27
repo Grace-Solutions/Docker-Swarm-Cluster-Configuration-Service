@@ -39,8 +39,8 @@ type NginxUIClusterNode struct {
 }
 
 const (
-	// NginxUIServiceNamePattern matches NginxUI load balancer service names
-	NginxUIServiceNamePattern = `(?i).*Load.*Balancer.*`
+	// NginxUIServiceNamePattern matches NginxUI service names (NginxUI, nginx-ui, LoadBalancer, etc.)
+	NginxUIServiceNamePattern = `(?i)(.*nginx.*ui.*|.*load.*balancer.*)`
 	// NginxUILabelKey is the Docker node label for load balancer nodes
 	NginxUILabelKey = "loadbalancer"
 	// NginxUILabelValue is the expected value for the load balancer label
