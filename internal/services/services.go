@@ -277,6 +277,34 @@ func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string
 		}
 	}
 
+	// Update NginxUI cluster config AFTER service is deployed
+	// This discovers actual container hostnames and updates the hub node's app.ini
+	if nginxUIConfig != nil && nginxUIConfig.Enabled {
+		nginxUISvc := GetNginxUIService(services)
+		if nginxUISvc != nil {
+			// Construct the Docker Swarm service name (stack_service format)
+			// The stack name is the service name from metadata, and the YAML defines service keys
+			// For our NginxUI service: stack=NginxUI (or LoadBalancer), service key=LoadBalancer
+			// Full service name format: StackName_ServiceKey
+			swarmServiceName := nginxUISvc.Name + "_LoadBalancer"
+			log.Infow("discovering NginxUI container hostnames for cluster config",
+				"swarmServiceName", swarmServiceName,
+			)
+
+			// Wait a moment for containers to fully start
+			time.Sleep(3 * time.Second)
+
+			containers, err := DiscoverNginxUIContainers(ctx, sshPool, primaryMaster, swarmServiceName)
+			if err != nil {
+				log.Warnw("failed to discover NginxUI containers", "error", err)
+			} else if len(containers) > 1 {
+				if err := UpdateNginxUIClusterConfig(ctx, sshPool, storageMountPath, containers, nginxUIConfig.Secrets.NodeSecret); err != nil {
+					log.Warnw("failed to update NginxUI cluster config", "error", err)
+				}
+			}
+		}
+	}
+
 	// Calculate final metrics
 	metrics.EndTime = time.Now()
 	metrics.Duration = metrics.EndTime.Sub(metrics.StartTime)

@@ -343,3 +343,203 @@ func GetNginxUIService(services []ServiceMetadata) *ServiceMetadata {
 	return nil
 }
 
+// NginxUIContainerInfo represents a discovered NginxUI container
+type NginxUIContainerInfo struct {
+	NodeHostname      string // Docker Swarm node hostname (e.g., DOCKER-SWARM-NODE-0000)
+	ContainerHostname string // Container's internal hostname (from docker inspect .Config.Hostname)
+	ContainerID       string // Container ID
+}
+
+// DiscoverNginxUIContainers discovers all running NginxUI containers and their hostnames.
+// This should be called AFTER the NginxUI service is deployed.
+// serviceName is the full Docker Swarm service name (e.g., "NginxUI_LoadBalancer")
+func DiscoverNginxUIContainers(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, serviceName string) ([]NginxUIContainerInfo, error) {
+	log := logging.L().With("component", "nginxui")
+
+	// Get all tasks for the service with their node and container info
+	// Format: NodeHostname|ContainerID
+	cmd := fmt.Sprintf(`docker service ps %s --filter 'desired-state=running' --format '{{.Node}}|{{.ID}}' --no-trunc`, serviceName)
+	log.Infow("discovering NginxUI containers", "command", cmd)
+
+	stdout, stderr, err := sshPool.Run(ctx, primaryMaster, cmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list service tasks: %w (stderr: %s)", err, stderr)
+	}
+
+	var containers []NginxUIContainerInfo
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Split(line, "|")
+		if len(parts) != 2 {
+			log.Warnw("unexpected task format", "line", line)
+			continue
+		}
+
+		nodeHostname := parts[0]
+		taskID := parts[1]
+
+		// Get the container ID for this task on its node
+		// Query the specific node to get container info
+		containerCmd := fmt.Sprintf(`docker ps --filter 'label=com.docker.swarm.task.id=%s' --format '{{.ID}}' --no-trunc`, taskID)
+		containerStdout, _, err := sshPool.Run(ctx, nodeHostname, containerCmd)
+		if err != nil {
+			log.Warnw("failed to get container ID", "node", nodeHostname, "taskID", taskID, "error", err)
+			continue
+		}
+
+		containerID := strings.TrimSpace(containerStdout)
+		if containerID == "" {
+			log.Warnw("no container found for task", "node", nodeHostname, "taskID", taskID)
+			continue
+		}
+
+		// Get the container's hostname from docker inspect
+		hostnameCmd := fmt.Sprintf(`docker inspect %s --format '{{.Config.Hostname}}'`, containerID)
+		hostnameStdout, _, err := sshPool.Run(ctx, nodeHostname, hostnameCmd)
+		if err != nil {
+			log.Warnw("failed to get container hostname", "node", nodeHostname, "containerID", containerID, "error", err)
+			continue
+		}
+
+		containerHostname := strings.TrimSpace(hostnameStdout)
+		if containerHostname == "" {
+			// Fallback to container ID prefix if hostname is empty
+			if len(containerID) >= 12 {
+				containerHostname = containerID[:12]
+			} else {
+				containerHostname = containerID
+			}
+		}
+
+		containers = append(containers, NginxUIContainerInfo{
+			NodeHostname:      nodeHostname,
+			ContainerHostname: containerHostname,
+			ContainerID:       containerID,
+		})
+
+		log.Infow("discovered NginxUI container",
+			"node", nodeHostname,
+			"containerHostname", containerHostname,
+			"containerID", containerID[:12],
+		)
+	}
+
+	log.Infow("discovered NginxUI containers", "count", len(containers))
+	return containers, nil
+}
+
+// UpdateNginxUIClusterConfig updates the cluster configuration in app.ini for the hub node
+// after containers are discovered. Only the first (hub) node gets cluster config pointing to other nodes.
+func UpdateNginxUIClusterConfig(ctx context.Context, sshPool *ssh.Pool, storagePath string, containers []NginxUIContainerInfo, nodeSecret string) error {
+	log := logging.L().With("component", "nginxui")
+
+	if len(containers) < 2 {
+		log.Infow("less than 2 NginxUI containers, no cluster config needed", "count", len(containers))
+		return nil
+	}
+
+	// Sort containers by node hostname to ensure consistent first node selection
+	// (hub-spoke model: first node is the hub)
+	sortedContainers := make([]NginxUIContainerInfo, len(containers))
+	copy(sortedContainers, containers)
+	// Simple sort by node hostname
+	for i := 0; i < len(sortedContainers)-1; i++ {
+		for j := i + 1; j < len(sortedContainers); j++ {
+			if sortedContainers[i].NodeHostname > sortedContainers[j].NodeHostname {
+				sortedContainers[i], sortedContainers[j] = sortedContainers[j], sortedContainers[i]
+			}
+		}
+	}
+
+	// First container is the hub
+	hubContainer := sortedContainers[0]
+	otherContainers := sortedContainers[1:]
+
+	// Build cluster config section for the hub - pointing to all OTHER containers
+	var clusterLines []string
+	clusterLines = append(clusterLines, "[cluster]")
+	for _, container := range otherContainers {
+		// Use container hostname for addressing over overlay network
+		nodeLine := fmt.Sprintf("Node = http://%s:%d?name=%s&node_secret=%s&enabled=true",
+			container.ContainerHostname,
+			NginxUIPort,
+			container.NodeHostname, // Display name
+			nodeSecret,
+		)
+		clusterLines = append(clusterLines, nodeLine)
+	}
+	clusterConfig := strings.Join(clusterLines, "\n")
+
+	// Update the hub's app.ini
+	appIniPath := filepath.ToSlash(filepath.Join(storagePath, "data", NginxUIDataDir, hubContainer.NodeHostname, "nginxui", "app.ini"))
+
+	log.Infow("updating NginxUI cluster config on hub node",
+		"hubNode", hubContainer.NodeHostname,
+		"hubContainerHostname", hubContainer.ContainerHostname,
+		"appIniPath", appIniPath,
+		"otherNodes", len(otherContainers),
+	)
+
+	// Read existing app.ini
+	readCmd := fmt.Sprintf("cat '%s' 2>/dev/null || echo ''", appIniPath)
+	existingContent, _, err := sshPool.Run(ctx, hubContainer.NodeHostname, readCmd)
+	if err != nil {
+		return fmt.Errorf("failed to read existing app.ini: %w", err)
+	}
+
+	// Remove existing [cluster] section if present
+	newContent := removeClusterSection(existingContent)
+
+	// Append new cluster config
+	newContent = strings.TrimRight(newContent, "\n") + "\n\n" + clusterConfig + "\n"
+
+	// Write back
+	writeCmd := fmt.Sprintf("cat > '%s' << 'EOFCLUSTER'\n%s\nEOFCLUSTER", appIniPath, newContent)
+	if _, stderr, err := sshPool.Run(ctx, hubContainer.NodeHostname, writeCmd); err != nil {
+		return fmt.Errorf("failed to write app.ini: %w (stderr: %s)", err, stderr)
+	}
+
+	log.Infow("✅ NginxUI cluster config updated",
+		"hubNode", hubContainer.NodeHostname,
+		"clusterNodes", len(otherContainers),
+	)
+
+	// Log the cluster config for visibility
+	log.Infow("=== NginxUI Cluster Config (Hub: " + hubContainer.NodeHostname + ") ===")
+	for _, line := range clusterLines {
+		log.Infow(line)
+	}
+
+	return nil
+}
+
+// removeClusterSection removes the [cluster] section from INI content
+func removeClusterSection(content string) string {
+	lines := strings.Split(content, "\n")
+	var result []string
+	inCluster := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "[cluster]" {
+			inCluster = true
+			continue
+		}
+		// Next section starts
+		if inCluster && strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			inCluster = false
+		}
+		if !inCluster {
+			result = append(result, line)
+		}
+	}
+
+	return strings.Join(result, "\n")
+}
+
