@@ -137,8 +137,9 @@ server {
     }
 
     # Portainer Management Interface (via internal network)
+    # Note: Portainer uses --base-url /portainer internally, so proxy to root /
     location /portainer/ {
-        proxy_pass http://Portainer_Portainer:9000/portainer/;
+        proxy_pass http://Portainer_Portainer:9000/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

@@ -18,13 +18,13 @@ services:
     volumes:
       - /mnt/MicroCephFS/docker-swarm-0001/data/Portainer:/data:rw
     networks:
-      - DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION
+      - INTERNAL
     deploy:
       replicas: 1
       placement:
         constraints:
           - node.platform.os==linux
-          - node.role==worker
+          - node.role==manager
       resources:
         limits:
           cpus: '8'
@@ -47,5 +47,6 @@ services:
         delay: 10s
 
 networks:
-  DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION:
+  INTERNAL:
+    name: DOCKER-SWARM-SERVICES-INTERNAL
     external: true

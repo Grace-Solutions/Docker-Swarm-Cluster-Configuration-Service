@@ -7,9 +7,18 @@ package defaults
 // =============================================================================
 
 // Network names for Docker Swarm overlay networks
+// Architecture:
+//   - EXTERNAL: Only the load balancer (nginx) attaches to this network for incoming traffic
+//   - INTERNAL: All services attach to this network for inter-service communication
+//   - The load balancer bridges both networks, providing network isolation for backend services
 const (
+	// ExternalNetworkName is the name of the external overlay network.
+	// Only the load balancer (nginx) should attach to this network.
+	ExternalNetworkName = "DOCKER-SWARM-SERVICES-EXTERNAL"
+
 	// InternalNetworkName is the name of the internal overlay network for inter-service communication.
-	InternalNetworkName = "DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION"
+	// All services (including load balancer) attach to this network.
+	InternalNetworkName = "DOCKER-SWARM-SERVICES-INTERNAL"
 
 	// DefaultIngressNetworkName is Docker's default ingress network name.
 	// We use the default ingress network instead of creating a custom one.
@@ -22,6 +31,17 @@ type NetworkConfig struct {
 	Subnet   string
 	Gateway  string
 	Internal bool // If true, network is internal-only (no external access)
+}
+
+// ExternalNetwork returns the configuration for the external overlay network.
+// Uses 10.20.0.0/20 subnet. This network is NOT internal (allows external access).
+func ExternalNetwork() NetworkConfig {
+	return NetworkConfig{
+		Name:     ExternalNetworkName,
+		Subnet:   "10.20.0.0/20",
+		Gateway:  "10.20.0.1",
+		Internal: false,
+	}
 }
 
 // InternalNetwork returns the default configuration for the internal overlay network.
@@ -37,8 +57,10 @@ func InternalNetwork() NetworkConfig {
 
 // AllNetworks returns all default overlay network configurations that we create.
 // Note: This does NOT include the default Docker ingress network which is managed by Docker.
+// Networks are returned in order: External first, then Internal.
 func AllNetworks() []NetworkConfig {
 	return []NetworkConfig{
+		ExternalNetwork(),
 		InternalNetwork(),
 	}
 }

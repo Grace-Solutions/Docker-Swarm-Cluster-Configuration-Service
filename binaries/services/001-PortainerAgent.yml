@@ -13,7 +13,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/lib/docker/volumes:/var/lib/docker/volumes
     networks:
-      - DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION
+      - INTERNAL
     deploy:
       mode: global
       placement:
@@ -33,6 +33,7 @@ services:
         window: 120s
 
 networks:
-  DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION:
+  INTERNAL:
+    name: DOCKER-SWARM-SERVICES-INTERNAL
     external: true
 

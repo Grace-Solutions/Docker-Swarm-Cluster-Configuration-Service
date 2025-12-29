@@ -66,5 +66,14 @@ services:
       rollback_config:
         parallelism: 1
         delay: 10s
+    networks:
+      - EXTERNAL
+      - INTERNAL
 
-
+networks:
+  EXTERNAL:
+    name: DOCKER-SWARM-SERVICES-EXTERNAL
+    external: true
+  INTERNAL:
+    name: DOCKER-SWARM-SERVICES-INTERNAL
+    external: true
