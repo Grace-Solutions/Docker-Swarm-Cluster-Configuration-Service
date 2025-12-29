@@ -253,6 +253,12 @@ type NodeConfig struct {
 	// Keepalived Settings (per-node)
 	Keepalived NodeKeepalivedConfig `json:"keepalived"` // Per-node Keepalived settings
 
+	// Management Panel Settings (per-node)
+	ManagementPanel ManagementPanelConfig `json:"managementPanel"` // Per-node management panel settings (Webmin/1Panel/Cockpit)
+
+	// Firewall Settings (per-node)
+	Firewall FirewallConfig `json:"firewall"` // Per-node firewall (iptables) settings
+
 	// Custom Labels
 	Labels map[string]string `json:"labels"` // Custom Docker node labels (key-value pairs)
 }

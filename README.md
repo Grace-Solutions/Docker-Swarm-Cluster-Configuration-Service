@@ -36,6 +36,25 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Grace-Solutions/Docker
 ```
 </details>
 
+### After Deployment
+
+Once deployment completes, your management interfaces are accessible via any node IP or the Virtual IP (if Keepalived is enabled):
+
+| Service | URL | Description |
+|---------|-----|-------------|
+| **NginxUI** | `http://<VIP>/nginxui/` or `http://<node-ip>/nginxui/` | Nginx management interface |
+| **Portainer** | `http://<VIP>/portainer/` or `http://<node-ip>/portainer/` | Docker Swarm management GUI |
+
+Credentials are auto-generated and saved to: `<mountPath>/secrets/nginxui-credentials.json`
+
+**NginxUI Login:**
+
+![NginxUI Login](docs/nginxui-login.png)
+
+**Portainer Dashboard:**
+
+![Portainer Dashboard](docs/portainer-dashboard.png)
+
 ---
 
 ## What This Tool Does
@@ -50,6 +69,8 @@ This tool transforms bare Linux servers into a fully operational Docker Swarm cl
 | **NginxUI** | Web-based Nginx management interface with visual site configuration, SSL certificate management, and real-time monitoring |
 | **Portainer** | Docker management GUI for visualizing containers, stacks, networks, and volumes with role-based access control |
 | **Overlay Networks** | Secure mesh networking via Netbird, Tailscale, or WireGuard for cross-node communication over public/private networks |
+| **Firewall (iptables)** | Per-node firewall configuration with predefined security profiles (BlockAllPublic, AllowAllPrivate, Harden) and custom port rules |
+| **Management Panels** | Optional web-based server management: Webmin (port 10000), 1Panel (port 10086), or Cockpit (port 9090) |
 
 ---
 
@@ -62,6 +83,8 @@ This tool transforms bare Linux servers into a fully operational Docker Swarm cl
 - ✅ **NginxUI + Portainer** - Pre-configured management interfaces accessible via reverse proxy
 - ✅ **Overlay Networking** - Support for Netbird, Tailscale, and WireGuard
 - ✅ **Service Deployment** - Generic YAML-based service deployment system
+- ✅ **Firewall Configuration** - Per-node iptables rules with predefined security profiles
+- ✅ **Management Panels** - Optional web-based server management (Webmin, 1Panel, Cockpit)
 - ✅ **Teardown/Reset** - Clean cluster removal with optional data preservation
 - ✅ **Geolocation Detection** - Automatic region detection and node labeling
 - ✅ **Credentials Management** - Auto-generated credentials saved to shared storage
@@ -240,7 +263,9 @@ See `binaries/dscotctl.json.example` for a complete example.
       "role": "manager",
       "storageEnabled": true,
       "keepalived": { "enabled": true, "priority": "auto" },
-      "labels": { "environment": "production" }
+      "labels": { "environment": "production", "loadbalancer": "true" },
+      "managementPanel": { "enabled": true, "type": "webmin" },
+      "firewall": { "configurationEnabled": true, "profiles": [...], "ports": [...] }
     }
   ]
 }
@@ -255,8 +280,112 @@ See `binaries/dscotctl.json.example` for a complete example.
 | `role` | `manager`, `worker`, or `both` |
 | `storageEnabled` | Enable MicroCeph on this node |
 | `keepalived.enabled` | Include in VIP failover group |
-| `labels` | Custom Docker node labels |
+| `labels` | Custom Docker node labels (use `loadbalancer: true` for NginxUI) |
+| `managementPanel` | Web-based server management panel (see below) |
+| `firewall` | Per-node firewall (iptables) configuration (see below) |
 | `rebootOnCompletion` | Reboot after deployment |
+
+### Management Panel Configuration
+
+Install a web-based server management panel on individual nodes:
+
+```json
+{
+  "managementPanel": {
+    "enabled": true,
+    "type": "webmin"
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `enabled` | Enable management panel installation |
+| `type` | Panel type: `webmin`, `1panel`, or `cockpit` |
+
+**Supported Panels:**
+
+| Panel | Port | Description |
+|-------|------|-------------|
+| `webmin` | 10000 | Full-featured web-based system administration |
+| `1panel` | 10086 | Modern server management panel (Docker-native) |
+| `cockpit` | 9090 | Lightweight, systemd-integrated web console |
+
+### Firewall Configuration
+
+Configure iptables firewall rules per-node. Uses predefined profiles and custom port rules.
+
+**Safety Guarantees:**
+- ✅ **Never flushes chains** - Existing rules from Docker, overlays, Keepalived are preserved
+- ✅ **Docker chains preserved** - Never touches FORWARD chain; Docker bridge interfaces always allowed
+- ✅ **Overlay networks protected** - Netbird (wt0), Tailscale (tailscale0), WireGuard (wg0) interfaces/ports always allowed
+- ✅ **Keepalived VRRP protected** - IP protocol 112 (VRRP) and multicast 224.0.0.18 always allowed
+- ✅ **Docker Swarm ports allowed** - Ports 2377, 7946, 4789 for cluster communication
+- ✅ **Rules persist across reboots** - Automatically installs `iptables-persistent` and saves to `/etc/iptables/rules.v4`
+- ✅ **Backup created** - Existing rules backed up to `/root/iptables-backup-*.rules` before changes
+
+```json
+{
+  "firewall": {
+    "configurationEnabled": true,
+    "profiles": [
+      { "enabled": true, "name": "BlockAllPublic" },
+      { "enabled": true, "name": "AllowAllPrivate" },
+      { "enabled": true, "name": "Harden" }
+    ],
+    "ports": [
+      {
+        "enabled": true,
+        "protocol": ["TCP"],
+        "rangeList": [80, 443],
+        "sources": ["0.0.0.0/0"],
+        "action": "ACCEPT",
+        "comment": "Allow HTTP/HTTPS from anywhere"
+      },
+      {
+        "enabled": true,
+        "protocol": ["TCP", "UDP"],
+        "rangeList": ["4500-6500"],
+        "sources": ["private", "cgnat"],
+        "action": "ACCEPT",
+        "comment": "Allow custom ports from private networks"
+      }
+    ]
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `configurationEnabled` | Enable firewall rule processing (does NOT disable OS firewall when false) |
+| `profiles` | Predefined security profiles to apply (in order) |
+| `ports` | Custom port rules (applied after profiles) |
+
+**Firewall Profiles:**
+
+| Profile | Description |
+|---------|-------------|
+| `BlockAllPublic` | Block all inbound from public IPs, allow only established/related + loopback, set INPUT policy to DROP |
+| `AllowAllPrivate` | Allow all traffic from RFC1918 (10.x, 172.16.x, 192.168.x) + RFC6598 CGNAT (100.64.x) |
+| `Harden` | Security hardening: SSH rate limiting (4/min), SYN flood protection, ICMP limits, drop invalid packets |
+
+**Port Rule Settings:**
+
+| Setting | Description |
+|---------|-------------|
+| `protocol` | Array of protocols: `["TCP"]`, `["UDP"]`, or `["TCP", "UDP"]` |
+| `rangeList` | Ports or ranges: `[80, 443, "4500-6500"]` |
+| `sources` | Source CIDRs or shortcuts: `["private", "cgnat", "10.0.0.0/8"]` |
+| `action` | `ACCEPT` or `DROP` (default: `ACCEPT`) |
+| `comment` | Optional description |
+
+**Source Shortcuts:**
+
+| Shortcut | Expands To |
+|----------|------------|
+| `private` | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` (RFC1918) |
+| `cgnat` | `100.64.0.0/10` (RFC6598 Carrier-Grade NAT) |
+| `any` | `0.0.0.0/0` (all sources) |
 
 ---
 
@@ -273,12 +402,25 @@ Credentials are saved to: `<mountPath>/secrets/nginxui-credentials.json`
 
 ```json
 {
-  "credentials": { "username": "admin", "password": "auto-generated" },
+  "credentials": {
+    "username": "admin",
+    "password": "auto-generated-password"
+  },
+  "secrets": {
+    "nodeSecret": "a9f3c7e2b8d14a6f5c0e9d3b7a1f8c4e...",
+    "jwtSecret": "d4b8f2a6c1e9573d0b4a8f2e6c1d9a7b...",
+    "cryptoSecret": "e7c3a9f1d5b8024e6a3c9f1d7b4e8a2c..."
+  },
   "accessUrls": {
     "nginxui": ["http://172.16.32.250/nginxui/", "http://node-0/nginxui/"],
     "portainer": ["http://172.16.32.250/portainer/", "http://node-0/portainer/"]
   },
-  "virtualIp": "172.16.32.250"
+  "virtualIp": "172.16.32.250",
+  "nodes": [
+    { "hostname": "node-0", "containerId": "abc123", "containerName": "nginxui-node-0", "isHub": true },
+    { "hostname": "node-1", "containerId": "def456", "containerName": "nginxui-node-1", "isHub": false }
+  ],
+  "generatedAt": "2025-01-01T12:00:00Z"
 }
 ```
 

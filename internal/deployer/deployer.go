@@ -14,6 +14,7 @@ import (
 	"clusterctl/internal/defaults"
 	"clusterctl/internal/geolocation"
 	"clusterctl/internal/logging"
+	"clusterctl/internal/nodeconfig"
 	"clusterctl/internal/orchestrator"
 	"clusterctl/internal/retry"
 	"clusterctl/internal/services"
@@ -264,6 +265,15 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 				keepalivedVIP = keepalivedDeployment.VIP // Store VIP for later use
 			}
 		}
+	}
+
+	// Phase 8c: Configure per-node settings (ManagementPanel, Firewall)
+	log.Infow("Phase 8c: Configuring per-node settings (ManagementPanel, Firewall)")
+	nodeConfigurator := nodeconfig.NewNodeConfigurator(sshPool)
+	if err := nodeConfigurator.ConfigureAllNodes(ctx, enabledNodes); err != nil {
+		log.Warnw("failed to configure some node settings", "error", err)
+	} else {
+		log.Infow("✅ Per-node configuration complete")
 	}
 
 	// Phase 9: Deploy services from YAML files

@@ -340,7 +340,7 @@ func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string
 
 					// Write credentials and cluster info to file
 					// Uses shared storage if available, otherwise writes locally on hub node
-					if err := WriteNginxUICredentials(ctx, sshPool, clusterInfo.PrimaryMaster, storageMountPath, creds, containers, nginxUIConfig.Secrets.NodeSecret, clusterInfo.KeepalivedVIP, clusterInfo.PortainerEnabled); err != nil {
+					if err := WriteNginxUICredentials(ctx, sshPool, clusterInfo.PrimaryMaster, storageMountPath, creds, containers, nginxUIConfig.Secrets, clusterInfo.KeepalivedVIP, clusterInfo.PortainerEnabled); err != nil {
 						log.Warnw("failed to write NginxUI credentials file", "error", err)
 					}
 				}

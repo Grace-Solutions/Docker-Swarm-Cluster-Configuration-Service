@@ -28,8 +28,8 @@
           "enableRadosGateway": true,
           "radosGatewayPort": 7480,
           "radosGatewayMultisite": true,
-          "s3BucketName": "docker-swarm",
-          "s3CredentialsFile": "/mnt/MicroCephFS/docker-swarm-0001/s3-credentials.json"
+          "s3BucketName": "docker-swarm-0001",
+          "s3CredentialsFile": "/mnt/MicroCephFS/docker-swarm-0001/secrets/s3-credentials.json"
         }
       }
     },
@@ -89,7 +89,37 @@
       "storageEnabled": true,
       "scriptsEnabled": true,
       "keepalived": { "enabled": true, "priority": "auto", "state": "auto" },
-      "labels": { "environment": "production", "region": "us-east-1", "tier": "control-plane", "loadbalancer": "true" }
+      "labels": { "environment": "production", "region": "us-east-1", "tier": "control-plane", "loadbalancer": "true" },
+      "managementPanel": {
+        "enabled": true,
+        "type": "webmin"
+      },
+      "firewall": {
+        "configurationEnabled": true,
+        "profiles": [
+          { "enabled": true, "name": "BlockAllPublic" },
+          { "enabled": true, "name": "AllowAllPrivate" },
+          { "enabled": true, "name": "Harden" }
+        ],
+        "ports": [
+          {
+            "enabled": true,
+            "protocol": ["TCP"],
+            "rangeList": [80, 443],
+            "sources": ["0.0.0.0/0"],
+            "action": "ACCEPT",
+            "comment": "Allow HTTP/HTTPS from anywhere"
+          },
+          {
+            "enabled": true,
+            "protocol": ["TCP", "UDP"],
+            "rangeList": ["4500-6500"],
+            "sources": ["private", "cgnat"],
+            "action": "ACCEPT",
+            "comment": "Allow custom ports from private networks only"
+          }
+        ]
+      }
     },
     {
       "enabled": true,
