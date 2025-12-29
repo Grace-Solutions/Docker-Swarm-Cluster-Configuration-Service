@@ -1,24 +1,20 @@
 # NAME: Portainer
 # DESCRIPTION: Portainer CE - Container management UI for Docker Swarm
 # ENABLED: true
+# NOTE: Portainer is accessed via NginxUI reverse proxy at /portainer/
+#       Port 8000 (agent tunnel) is exposed via TCP stream on NginxUI
 
 services:
   Portainer:
     image: portainer/portainer-ce:latest
-    hostname: 'portainer-{{.Task.Slot}}'
-    command: -H tcp://tasks.PortainerAgent:9001 --tlsskipverify
+    hostname: 'portainer-{{.Node.ID}}'
+    command: -H tcp://tasks.PortainerAgent:9001 --tlsskipverify --base-url /portainer
     environment:
       PORTAINER_AGENT_ADDR: tasks.PortainerAgent
       LOG_LEVEL: INFO
-    ports:
-      - target: 9443
-        published: 9443
-        protocol: tcp
-        mode: ingress
-      - target: 8000
-        published: 8000
-        protocol: tcp
-        mode: ingress
+    # No published ports - accessed via NginxUI reverse proxy
+    # Port 9000 (HTTP) -> /portainer/ location in NginxUI
+    # Port 8000 (agent tunnel) -> TCP stream in NginxUI
     volumes:
       - /mnt/MicroCephFS/docker-swarm-0001/data/Portainer:/data:rw
     networks:
@@ -29,6 +25,13 @@ services:
         constraints:
           - node.platform.os==linux
           - node.role==worker
+      resources:
+        limits:
+          cpus: '8'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
       restart_policy:
         condition: on-failure
         delay: 5s

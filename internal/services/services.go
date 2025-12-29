@@ -44,6 +44,10 @@ type ClusterInfo struct {
 	AllNodes                  []string // list of all SSH-accessible nodes for directory creation
 	DistributedStorageEnabled bool     // true if distributed storage is enabled (shared across nodes)
 	PrimaryMaster             string   // primary master node SSH address
+	S3CredentialsFile         string   // path to S3 credentials file (if RGW enabled)
+	RadosGatewayPort          int      // RADOS Gateway port (if RGW enabled)
+	KeepalivedVIP             string   // virtual IP address if keepalived enabled (empty if not)
+	PortainerEnabled          bool     // true if Portainer service is deployed
 }
 
 const (
@@ -300,6 +304,53 @@ func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string
 			} else if len(containers) > 1 {
 				if err := UpdateNginxUIClusterConfig(ctx, sshPool, storageMountPath, containers, nginxUIConfig.Secrets.NodeSecret, swarmServiceName); err != nil {
 					log.Warnw("failed to update NginxUI cluster config", "error", err)
+				}
+
+				// After cluster config update, containers are restarted
+				// Wait for them to come back up and then reset the admin password
+				log.Infow("waiting for NginxUI containers to restart after cluster config update")
+				time.Sleep(10 * time.Second)
+
+				// Re-discover containers after restart (they have new IDs)
+				containers, err = DiscoverNginxUIContainers(ctx, sshPool, primaryMaster, swarmServiceName)
+				if err != nil {
+					log.Warnw("failed to re-discover NginxUI containers after restart", "error", err)
+				}
+			}
+
+			// Update node tokens in the database to match the configured node_secret
+			// This fixes the "version incompatible" error caused by token mismatch
+			if len(containers) > 1 {
+				if err := UpdateNginxUINodeTokens(ctx, sshPool, storageMountPath, containers, nginxUIConfig.Secrets.NodeSecret); err != nil {
+					log.Warnw("failed to update NginxUI node tokens", "error", err)
+				}
+			}
+
+			// Reset admin password using nginx-ui's built-in reset-password command
+			// This generates a new random password and logs it for operator reference
+			if len(containers) > 0 {
+				creds, err := ResetNginxUIAdminPassword(ctx, sshPool, containers)
+				if err != nil {
+					log.Warnw("failed to set NginxUI admin password", "error", err)
+				} else {
+					log.Infow("=== NginxUI Admin Credentials ===")
+					log.Infow(fmt.Sprintf("  Username: %s", creds.Username))
+					log.Infow(fmt.Sprintf("  Password: %s", creds.Password))
+					log.Infow("=================================")
+
+					// Write credentials and cluster info to file
+					// Uses shared storage if available, otherwise writes locally on hub node
+					if err := WriteNginxUICredentials(ctx, sshPool, clusterInfo.PrimaryMaster, storageMountPath, creds, containers, nginxUIConfig.Secrets.NodeSecret, clusterInfo.KeepalivedVIP, clusterInfo.PortainerEnabled); err != nil {
+						log.Warnw("failed to write NginxUI credentials file", "error", err)
+					}
+				}
+
+				// Configure S3 proxy if RGW is enabled and credentials file exists
+				if clusterInfo.S3CredentialsFile != "" && clusterInfo.RadosGatewayPort > 0 {
+					log.Infow("configuring S3 proxy for NginxUI", "credentialsFile", clusterInfo.S3CredentialsFile)
+					if err := ConfigureS3Proxy(ctx, sshPool, storageMountPath, clusterInfo.S3CredentialsFile, containers, clusterInfo.RadosGatewayPort); err != nil {
+						log.Warnw("failed to configure S3 proxy", "error", err)
+					}
 				}
 			}
 		}

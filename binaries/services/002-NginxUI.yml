@@ -10,7 +10,7 @@
 services:
   LoadBalancer:
     image: uozi/nginx-ui:sha-4754ef3
-    hostname: 'LoadBalancer-{{.Node.ID}}'
+    hostname: 'loadbalancer-{{.Node.ID}}'
     environment:
       TZ: UTC
       # Skip installation wizard
@@ -25,8 +25,6 @@ services:
       NGINX_UI_APP_JWT_SECRET: "d4b8f2a6c1e9573d0b4a8f2e6c1d9a7b"
       NGINX_UI_CRYPTO_SECRET: "e7c3a9f1d5b8024e6a3c9f1d7b4e8a2c"
     ports:
-      # Port 9000 not exposed - internal overlay network access only
-      # Access NginxUI via front-door NGINX proxy
       - target: 80
         published: 80
         protocol: tcp
@@ -40,14 +38,21 @@ services:
       - /mnt/MicroCephFS/docker-swarm-0001/data/NginxUI/{{.Node.Hostname}}/nginx:/etc/nginx:rw
       - /mnt/MicroCephFS/docker-swarm-0001/data/NginxUI/{{.Node.Hostname}}/nginxui:/etc/nginx-ui:rw
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION
     deploy:
       mode: global
+      endpoint_mode: dnsrr
       placement:
         constraints:
           - node.platform.os==linux
           - node.labels.loadbalancer==true
+        # max_replicas_per_node: 1 is implicit for global mode (one per matching node)
+      resources:
+        limits:
+          cpus: '8'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
       restart_policy:
         condition: on-failure
         delay: 5s
@@ -62,7 +67,4 @@ services:
         parallelism: 1
         delay: 10s
 
-networks:
-  DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION:
-    external: true
 

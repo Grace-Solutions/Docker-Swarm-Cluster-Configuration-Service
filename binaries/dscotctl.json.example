@@ -25,11 +25,11 @@
           "loopDeviceDirectory": "/mnt/MicroCephFS/LoopDevices",
           "loopDeviceSizeGB": 16,
           "loopDeviceThinProvision": true,
-          "enableRadosGateway": false,
+          "enableRadosGateway": true,
           "radosGatewayPort": 7480,
           "radosGatewayMultisite": true,
-          "s3BucketName": "",
-          "s3CredentialsFile": ""
+          "s3BucketName": "docker-swarm",
+          "s3CredentialsFile": "/mnt/MicroCephFS/docker-swarm-0001/s3-credentials.json"
         }
       }
     },

@@ -4,14 +4,27 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"clusterctl/internal/logging"
 	"clusterctl/internal/ssh"
 )
+
+// S3Credentials represents the S3 credentials file format.
+// This is read from the file written by storage setup.
+type S3Credentials struct {
+	Endpoints  []string `json:"endpoints"`
+	AccessKey  string   `json:"accessKey"`
+	SecretKey  string   `json:"secretKey"`
+	UserID     string   `json:"userId"`
+	BucketName string   `json:"bucketName,omitempty"`
+}
 
 // NginxUISecrets contains the generated secrets for NginxUI
 type NginxUISecrets struct {
@@ -567,3 +580,426 @@ func removeClusterSection(content string) string {
 	return strings.Join(result, "\n")
 }
 
+// NginxUICredentials contains the admin credentials for NginxUI
+type NginxUICredentials struct {
+	Username string
+	Password string
+}
+
+// Default admin username (from service YAML env vars)
+const (
+	NginxUIDefaultUsername = "admin"
+)
+
+// UpdateNginxUINodeTokens updates the node tokens in the NginxUI database to match the configured node_secret.
+// This is needed because NginxUI creates nodes in its database with a token generated from the Node URL parameter,
+// but the actual authentication uses the node_secret from the config. This mismatch causes "version incompatible" errors.
+// Must be run on the hub node (first node in sorted order).
+func UpdateNginxUINodeTokens(ctx context.Context, sshPool *ssh.Pool, storagePath string, containers []NginxUIContainerInfo, nodeSecret string) error {
+	log := logging.L().With("component", "nginxui")
+
+	if len(containers) < 2 {
+		log.Infow("less than 2 NginxUI containers, no token update needed", "count", len(containers))
+		return nil
+	}
+
+	// Sort containers by node hostname to get consistent hub node
+	sortedContainers := make([]NginxUIContainerInfo, len(containers))
+	copy(sortedContainers, containers)
+	for i := 0; i < len(sortedContainers)-1; i++ {
+		for j := i + 1; j < len(sortedContainers); j++ {
+			if sortedContainers[i].NodeHostname > sortedContainers[j].NodeHostname {
+				sortedContainers[i], sortedContainers[j] = sortedContainers[j], sortedContainers[i]
+			}
+		}
+	}
+
+	hubContainer := sortedContainers[0]
+
+	// Path to the hub node's database
+	dbPath := filepath.ToSlash(filepath.Join(storagePath, "data", NginxUIDataDir, hubContainer.NodeHostname, "nginxui", "database.db"))
+
+	log.Infow("updating NginxUI node tokens in database",
+		"hubNode", hubContainer.NodeHostname,
+		"dbPath", dbPath,
+		"nodeSecret", nodeSecret,
+	)
+
+	// Update all tokens in the nodes table to match the configured node_secret
+	// This fixes the mismatch between what's in the database and what the containers expect
+	updateCmd := fmt.Sprintf(`sqlite3 '%s' "UPDATE nodes SET token='%s';"`, dbPath, nodeSecret)
+	if _, stderr, err := sshPool.Run(ctx, hubContainer.NodeHostname, updateCmd); err != nil {
+		return fmt.Errorf("failed to update node tokens: %w (stderr: %s)", err, stderr)
+	}
+
+	// Verify the update
+	verifyCmd := fmt.Sprintf(`sqlite3 '%s' "SELECT id, name, token FROM nodes;"`, dbPath)
+	stdout, _, err := sshPool.Run(ctx, hubContainer.NodeHostname, verifyCmd)
+	if err != nil {
+		log.Warnw("failed to verify token update", "error", err)
+	} else {
+		log.Infow("✅ NginxUI node tokens updated successfully")
+		for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+			if line != "" {
+				log.Infow("  " + line)
+			}
+		}
+	}
+
+	return nil
+}
+
+// ResetNginxUIAdminPassword resets the admin password using nginx-ui's built-in reset-password command.
+// This generates a new random password and returns the credentials.
+// The password is logged for operator reference.
+func ResetNginxUIAdminPassword(ctx context.Context, sshPool *ssh.Pool, containers []NginxUIContainerInfo) (*NginxUICredentials, error) {
+	log := logging.L().With("component", "nginxui")
+
+	if len(containers) == 0 {
+		return nil, fmt.Errorf("no NginxUI containers found")
+	}
+
+	// Sort containers by node hostname to get consistent hub node
+	sortedContainers := make([]NginxUIContainerInfo, len(containers))
+	copy(sortedContainers, containers)
+	for i := 0; i < len(sortedContainers)-1; i++ {
+		for j := i + 1; j < len(sortedContainers); j++ {
+			if sortedContainers[i].NodeHostname > sortedContainers[j].NodeHostname {
+				sortedContainers[i], sortedContainers[j] = sortedContainers[j], sortedContainers[i]
+			}
+		}
+	}
+
+	hubContainer := sortedContainers[0]
+
+	log.Infow("resetting NginxUI admin password",
+		"hubNode", hubContainer.NodeHostname,
+		"containerID", hubContainer.ContainerID,
+	)
+
+	// Use nginx-ui's built-in reset-password command
+	// This generates a new random password and outputs: "User: admin, Password: <password>"
+	resetCmd := fmt.Sprintf("docker exec %s nginx-ui reset-password --config=/etc/nginx-ui/app.ini", hubContainer.ContainerID)
+	stdout, stderr, err := sshPool.Run(ctx, hubContainer.NodeHostname, resetCmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reset password: %w (stderr: %s)", err, stderr)
+	}
+
+	// Parse the output to extract username and password
+	// Format: "User: admin, Password: k%hCjY#5DD(d"
+	var username, password string
+	lines := strings.Split(stdout+stderr, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "User:") && strings.Contains(line, "Password:") {
+			// Extract username and password from the line
+			parts := strings.Split(line, ",")
+			for _, part := range parts {
+				part = strings.TrimSpace(part)
+				if strings.HasPrefix(part, "User:") {
+					username = strings.TrimSpace(strings.TrimPrefix(part, "User:"))
+				} else if strings.HasPrefix(part, "Password:") {
+					password = strings.TrimSpace(strings.TrimPrefix(part, "Password:"))
+				}
+			}
+		}
+	}
+
+	if username == "" || password == "" {
+		return nil, fmt.Errorf("failed to parse reset-password output: %s", stdout+stderr)
+	}
+
+	creds := &NginxUICredentials{
+		Username: username,
+		Password: password,
+	}
+
+	log.Infow("✅ NginxUI admin password reset successfully",
+		"username", creds.Username,
+		"password", creds.Password,
+	)
+
+	return creds, nil
+}
+
+// NginxUIClusterInfo contains comprehensive NginxUI cluster information for the credentials file
+type NginxUIClusterInfo struct {
+	Credentials struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	} `json:"credentials"`
+	AccessURLs struct {
+		NginxUI   []string `json:"nginxui"`             // URLs to access NginxUI (http://<node>/nginxui/)
+		Portainer []string `json:"portainer,omitempty"` // URLs to access Portainer (http://<node>/portainer/)
+	} `json:"accessUrls"`
+	VirtualIP  string `json:"virtualIp,omitempty"` // Virtual IP if keepalived enabled
+	NodeSecret string `json:"nodeSecret"`
+	Nodes      []struct {
+		Hostname      string `json:"hostname"`
+		ContainerID   string `json:"containerId"`
+		ContainerName string `json:"containerName"`
+		IsHub         bool   `json:"isHub"`
+	} `json:"nodes"`
+	GeneratedAt string `json:"generatedAt"`
+}
+
+// WriteNginxUICredentials writes NginxUI credentials and cluster info to a JSON file.
+// If storagePath is provided (shared storage enabled), writes to storagePath/secrets/nginxui-credentials.json
+// If storagePath is empty, writes to /root/.dscotctl/nginxui-credentials.json on the hub node
+// keepalivedVIP is the virtual IP if keepalived is enabled (empty string if not)
+// portainerEnabled indicates whether Portainer service is deployed
+func WriteNginxUICredentials(ctx context.Context, sshPool *ssh.Pool, hubNode string, storagePath string, creds *NginxUICredentials, containers []NginxUIContainerInfo, nodeSecret string, keepalivedVIP string, portainerEnabled bool) error {
+	log := logging.L().With("component", "nginxui")
+
+	if creds == nil {
+		return fmt.Errorf("credentials are nil")
+	}
+
+	// Determine output path
+	var credsPath string
+	if storagePath != "" {
+		// Shared storage - write to secrets folder
+		credsPath = filepath.ToSlash(filepath.Join(storagePath, "secrets", "nginxui-credentials.json"))
+	} else {
+		// Local storage - write to root home
+		credsPath = "/root/.dscotctl/nginxui-credentials.json"
+	}
+
+	// Create directory
+	dir := filepath.ToSlash(filepath.Dir(credsPath))
+	mkdirCmd := fmt.Sprintf("mkdir -p '%s'", dir)
+	if _, stderr, err := sshPool.Run(ctx, hubNode, mkdirCmd); err != nil {
+		log.Warnw("failed to create credentials directory", "path", dir, "error", err, "stderr", stderr)
+	}
+
+	// Sort containers to identify hub (first alphabetically)
+	sortedContainers := make([]NginxUIContainerInfo, len(containers))
+	copy(sortedContainers, containers)
+	for i := 0; i < len(sortedContainers)-1; i++ {
+		for j := i + 1; j < len(sortedContainers); j++ {
+			if sortedContainers[i].NodeHostname > sortedContainers[j].NodeHostname {
+				sortedContainers[i], sortedContainers[j] = sortedContainers[j], sortedContainers[i]
+			}
+		}
+	}
+
+	// Build cluster info struct
+	clusterInfo := NginxUIClusterInfo{
+		VirtualIP:   keepalivedVIP,
+		NodeSecret:  nodeSecret,
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	clusterInfo.Credentials.Username = creds.Username
+	clusterInfo.Credentials.Password = creds.Password
+
+	// Build access URLs for each node
+	for _, container := range sortedContainers {
+		nginxUIURL := fmt.Sprintf("http://%s/nginxui/", container.NodeHostname)
+		clusterInfo.AccessURLs.NginxUI = append(clusterInfo.AccessURLs.NginxUI, nginxUIURL)
+
+		if portainerEnabled {
+			portainerURL := fmt.Sprintf("http://%s/portainer/", container.NodeHostname)
+			clusterInfo.AccessURLs.Portainer = append(clusterInfo.AccessURLs.Portainer, portainerURL)
+		}
+	}
+
+	// Add VIP-based URLs if keepalived is enabled
+	if keepalivedVIP != "" {
+		vipNginxUIURL := fmt.Sprintf("http://%s/nginxui/", keepalivedVIP)
+		clusterInfo.AccessURLs.NginxUI = append([]string{vipNginxUIURL}, clusterInfo.AccessURLs.NginxUI...)
+
+		if portainerEnabled {
+			vipPortainerURL := fmt.Sprintf("http://%s/portainer/", keepalivedVIP)
+			clusterInfo.AccessURLs.Portainer = append([]string{vipPortainerURL}, clusterInfo.AccessURLs.Portainer...)
+		}
+	}
+
+	// Add node info
+	for i, container := range sortedContainers {
+		nodeInfo := struct {
+			Hostname      string `json:"hostname"`
+			ContainerID   string `json:"containerId"`
+			ContainerName string `json:"containerName"`
+			IsHub         bool   `json:"isHub"`
+		}{
+			Hostname:      container.NodeHostname,
+			ContainerID:   container.ContainerID,
+			ContainerName: container.ContainerHostname,
+			IsHub:         i == 0, // First node (alphabetically) is the hub
+		}
+		clusterInfo.Nodes = append(clusterInfo.Nodes, nodeInfo)
+	}
+
+	// Marshal to JSON
+	jsonBytes, err := json.MarshalIndent(clusterInfo, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal cluster info: %w", err)
+	}
+
+	// Write credentials file
+	writeCmd := fmt.Sprintf("cat > '%s' << 'EOF'\n%s\nEOF", credsPath, string(jsonBytes))
+	if _, stderr, err := sshPool.Run(ctx, hubNode, writeCmd); err != nil {
+		return fmt.Errorf("failed to write credentials file: %w (stderr: %s)", err, stderr)
+	}
+
+	// Set restrictive permissions
+	chmodCmd := fmt.Sprintf("chmod 600 '%s'", credsPath)
+	if _, _, err := sshPool.Run(ctx, hubNode, chmodCmd); err != nil {
+		log.Warnw("failed to set permissions on credentials file", "path", credsPath, "error", err)
+	}
+
+	log.Infow("NginxUI credentials written to file",
+		"path", credsPath,
+		"sharedStorage", storagePath != "",
+		"nodes", len(containers),
+	)
+
+	return nil
+}
+
+// ConfigureS3Proxy configures NginxUI to proxy S3 (RADOS Gateway) traffic.
+// It reads the S3 credentials file from shared storage and creates:
+// 1. An upstream block with all RGW endpoints for load balancing
+// 2. A location block at /s3/ for HTTP S3 access
+// 3. A TCP stream for direct S3 protocol access on the RGW port
+// This should be called after NginxUI is deployed and running.
+func ConfigureS3Proxy(ctx context.Context, sshPool *ssh.Pool, storagePath, s3CredentialsFile string, containers []NginxUIContainerInfo, rgwPort int) error {
+	log := logging.L().With("component", "nginxui-s3")
+
+	if s3CredentialsFile == "" {
+		log.Infow("S3 credentials file not configured, skipping S3 proxy setup")
+		return nil
+	}
+
+	if len(containers) == 0 {
+		return fmt.Errorf("no NginxUI containers found for S3 proxy configuration")
+	}
+
+	// Sort containers to get consistent hub node
+	sortedContainers := make([]NginxUIContainerInfo, len(containers))
+	copy(sortedContainers, containers)
+	for i := 0; i < len(sortedContainers)-1; i++ {
+		for j := i + 1; j < len(sortedContainers); j++ {
+			if sortedContainers[i].NodeHostname > sortedContainers[j].NodeHostname {
+				sortedContainers[i], sortedContainers[j] = sortedContainers[j], sortedContainers[i]
+			}
+		}
+	}
+
+	hubContainer := sortedContainers[0]
+
+	// Read S3 credentials file from shared storage
+	log.Infow("reading S3 credentials file", "path", s3CredentialsFile, "node", hubContainer.NodeHostname)
+	catCmd := fmt.Sprintf("cat '%s' 2>/dev/null", s3CredentialsFile)
+	stdout, _, err := sshPool.Run(ctx, hubContainer.NodeHostname, catCmd)
+	if err != nil || strings.TrimSpace(stdout) == "" {
+		log.Infow("S3 credentials file not found or empty, skipping S3 proxy setup", "path", s3CredentialsFile)
+		return nil
+	}
+
+	var s3Creds S3Credentials
+	if err := json.Unmarshal([]byte(stdout), &s3Creds); err != nil {
+		return fmt.Errorf("failed to parse S3 credentials file: %w", err)
+	}
+
+	if len(s3Creds.Endpoints) == 0 {
+		log.Infow("no S3 endpoints found in credentials file, skipping S3 proxy setup")
+		return nil
+	}
+
+	log.Infow("configuring S3 proxy for NginxUI",
+		"endpoints", len(s3Creds.Endpoints),
+		"rgwPort", rgwPort,
+	)
+
+	// Build upstream servers from endpoints (extract host:port from URLs)
+	var upstreamServers []string
+	for _, endpoint := range s3Creds.Endpoints {
+		u, err := url.Parse(endpoint)
+		if err != nil {
+			log.Warnw("failed to parse endpoint URL", "endpoint", endpoint, "error", err)
+			continue
+		}
+		upstreamServers = append(upstreamServers, u.Host)
+	}
+
+	if len(upstreamServers) == 0 {
+		return fmt.Errorf("no valid S3 upstream servers extracted from endpoints")
+	}
+
+	// Generate upstream config for load balancing
+	var upstreamLines []string
+	for _, server := range upstreamServers {
+		upstreamLines = append(upstreamLines, fmt.Sprintf("    server %s;", server))
+	}
+	upstreamConfig := strings.Join(upstreamLines, "\n")
+
+	// Create S3 proxy site config
+	s3SiteConfig := fmt.Sprintf(`# S3 RADOS Gateway Proxy
+# Load-balanced S3 access via /s3/ path
+# Generated by dscotctl
+# Endpoints: %s
+
+upstream s3_rados_gateway {
+%s
+}
+
+server {
+    listen 7480;
+    listen [::]:7480;
+    server_name _;
+
+    # S3 endpoint - proxy to RADOS Gateway cluster
+    location / {
+        proxy_pass http://s3_rados_gateway;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        client_max_body_size 0;
+    }
+}
+`, strings.Join(s3Creds.Endpoints, ", "), upstreamConfig)
+
+	// Write config to all NginxUI nodes
+	for _, container := range containers {
+		nginxPath := filepath.ToSlash(filepath.Join(storagePath, "data", NginxUIDataDir, container.NodeHostname, "nginx"))
+		s3ConfigPath := filepath.ToSlash(filepath.Join(nginxPath, "sites-available", "s3-gateway.conf"))
+		s3SymlinkPath := filepath.ToSlash(filepath.Join(nginxPath, "sites-enabled", "s3-gateway.conf"))
+
+		// Write site config
+		writeCmd := fmt.Sprintf("cat > '%s' << 'EOF'\n%sEOF", s3ConfigPath, s3SiteConfig)
+		if _, stderr, err := sshPool.Run(ctx, container.NodeHostname, writeCmd); err != nil {
+			log.Warnw("failed to write S3 site config", "node", container.NodeHostname, "error", err, "stderr", stderr)
+			continue
+		}
+
+		// Create symlink if not exists
+		symlinkCmd := fmt.Sprintf("ln -sf '../sites-available/s3-gateway.conf' '%s' 2>/dev/null || true", s3SymlinkPath)
+		if _, _, err := sshPool.Run(ctx, container.NodeHostname, symlinkCmd); err != nil {
+			log.Warnw("failed to create S3 site symlink", "node", container.NodeHostname, "error", err)
+		}
+
+		log.Infow("S3 proxy config written", "node", container.NodeHostname, "config", s3ConfigPath)
+	}
+
+	// Reload nginx in all containers
+	for _, container := range containers {
+		reloadCmd := fmt.Sprintf("docker exec %s nginx -s reload 2>/dev/null || true", container.ContainerID)
+		if _, _, err := sshPool.Run(ctx, container.NodeHostname, reloadCmd); err != nil {
+			log.Warnw("failed to reload nginx", "node", container.NodeHostname, "error", err)
+		}
+	}
+
+	log.Infow("✅ S3 proxy configured for NginxUI",
+		"endpoints", len(s3Creds.Endpoints),
+		"port", 7480,
+		"nodes", len(containers),
+	)
+
+	return nil
+}

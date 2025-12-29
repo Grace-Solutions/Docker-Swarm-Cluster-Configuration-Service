@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -244,6 +246,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 	log.Infow("✅ Node labels applied")
 
 	// Phase 8b: Configure Keepalived for high availability (if enabled)
+	var keepalivedVIP string // Used later for credentials file
 	if cfg.IsKeepalivedEnabled() {
 		log.Infow("Phase 8b: Configuring Keepalived for high availability")
 		keepalivedDeployment, err := services.PrepareKeepalivedDeployment(ctx, sshPool, cfg)
@@ -258,6 +261,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 					"interface", keepalivedDeployment.Interface,
 					"nodeCount", len(keepalivedDeployment.Nodes),
 				)
+				keepalivedVIP = keepalivedDeployment.VIP // Store VIP for later use
 			}
 		}
 	}
@@ -265,9 +269,32 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 	// Phase 9: Deploy services from YAML files
 	log.Infow("Phase 9: Deploying services")
 	storageMountPath := ""
+	s3CredentialsFile := ""
+	radosGatewayPort := 0
 	if ds.Enabled {
 		storageMountPath = ds.Providers.MicroCeph.MountPath
+		// Pass S3 credentials info if RGW is enabled
+		if ds.Providers.MicroCeph.EnableRadosGateway {
+			s3CredentialsFile = ds.Providers.MicroCeph.S3CredentialsFile
+			radosGatewayPort = ds.Providers.MicroCeph.RadosGatewayPort
+		}
 	}
+
+	// Check if Portainer is enabled by scanning service definitions
+	portainerEnabled := false
+	serviceDefDir := cfg.GlobalSettings.ServiceDefinitionDirectory
+	if serviceDefDir == "" {
+		exePath, _ := os.Executable()
+		serviceDefDir = filepath.Join(filepath.Dir(exePath), "services")
+	}
+	svcList, _ := services.DiscoverServices(serviceDefDir)
+	for _, svc := range svcList {
+		if svc.Enabled && strings.EqualFold(svc.Name, "Portainer") {
+			portainerEnabled = true
+			break
+		}
+	}
+
 	// Determine if cluster has dedicated workers for placement constraint handling
 	// sshWorkers only contains nodes with role="worker" (not "both" or "manager")
 	clusterInfo := services.ClusterInfo{
@@ -275,6 +302,10 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 		AllNodes:                  allSSHNodes,   // All nodes for directory creation
 		DistributedStorageEnabled: ds.Enabled,    // If true, storage is shared across nodes
 		PrimaryMaster:             primaryMaster, // Primary master for env var
+		S3CredentialsFile:         s3CredentialsFile,
+		RadosGatewayPort:          radosGatewayPort,
+		KeepalivedVIP:             keepalivedVIP,
+		PortainerEnabled:          portainerEnabled,
 	}
 	metrics, err := services.DeployServices(ctx, sshPool, primaryMaster, cfg.GlobalSettings.ServiceDefinitionDirectory, storageMountPath, clusterInfo)
 	if err != nil {

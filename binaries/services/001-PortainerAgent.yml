@@ -5,7 +5,7 @@
 services:
   PortainerAgent:
     image: portainer/agent:latest
-    hostname: 'portainer-agent-{{.Task.Slot}}'
+    hostname: 'portainer-agent-{{.Node.ID}}'
     environment:
       AGENT_CLUSTER_ADDR: tasks.PortainerAgent
       LOG_LEVEL: INFO
@@ -19,6 +19,13 @@ services:
       placement:
         constraints:
           - node.platform.os==linux
+      resources:
+        limits:
+          cpus: '8'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
       restart_policy:
         condition: on-failure
         delay: 5s
