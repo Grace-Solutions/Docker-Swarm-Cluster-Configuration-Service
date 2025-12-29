@@ -1,21 +1,24 @@
 # Services Directory
 
-This directory contains Docker Stack YAML files that will be automatically deployed to your Docker Swarm cluster.
+Docker Stack YAML files in this directory are automatically deployed to your Docker Swarm cluster.
 
-## How It Works
+---
 
-1. **Automatic Discovery**: `dscotctl` scans this directory for `.yml` and `.yaml` files
-2. **Metadata Parsing**: Each file's metadata is read from comment headers
-3. **Selective Deployment**: Only enabled services are deployed
-4. **Progress Tracking**: Detailed logging shows discovery, deployment progress, and metrics
+## Included Services
+
+| File | Service | Description |
+|------|---------|-------------|
+| `001-PortainerAgent.yml` | Portainer Agent | Global agent on all nodes for container management |
+| `002-NginxUI.yml` | NginxUI | Web-based Nginx management with reverse proxy for cluster services |
+| `003-Portainer.yml` | Portainer CE | Docker management GUI accessible via `/portainer/` |
+
+---
 
 ## Service File Format
 
-Each service file should be a valid Docker Stack Compose file (version 3.x) with metadata in comment headers:
-
 ```yaml
 # NAME: My Service
-# DESCRIPTION: Brief description of what this service does
+# DESCRIPTION: Brief description
 # ENABLED: true
 
 version: '3.8'
@@ -23,136 +26,87 @@ version: '3.8'
 services:
   my-service:
     image: my-image:latest
-    # ... rest of your service definition
+    deploy:
+      resources:
+        limits:
+          cpus: '8'
+          memory: 2G
+        reservations:
+          memory: 512M
 ```
 
-### Metadata Fields
+| Metadata | Description |
+|----------|-------------|
+| `NAME` | Service name (defaults to filename) |
+| `DESCRIPTION` | Brief description |
+| `ENABLED` | `true` or `false` (default: `true`) |
 
-- **NAME**: Service name (optional - defaults to filename without extension)
-- **DESCRIPTION**: Brief description of the service (optional)
-- **ENABLED**: `true` or `false` - controls whether the service is deployed (default: `true`)
+---
 
-## Adding New Services
+## Deployment Order
 
-1. Create a new `.yml` or `.yaml` file in this directory
-2. Add metadata headers at the top
-3. Define your Docker Stack services
-4. Run `dscotctl -config your-config.json`
+Services deploy in **alphabetical order by filename**. Use numeric prefixes:
 
-The service will be automatically discovered and deployed if enabled.
+```
+001-PortainerAgent.yml  → First
+002-NginxUI.yml         → Second
+003-Portainer.yml       → Third
+100-MyApp.yml           → After core services
+```
 
-## Disabling Services
+---
 
-To disable a service without deleting it:
+## Networks
 
-1. Edit the service file
-2. Change `# ENABLED: true` to `# ENABLED: false`
-3. Re-run deployment
+| Network | Purpose | Subnet |
+|---------|---------|--------|
+| `DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION` | Internal cluster traffic | 172.17.16.0/20 |
+| `DOCKER-SWARM-CLUSTER-EXTERNAL-INGRESS` | External-facing services | 172.17.32.0/20 |
 
-Or simply remove/rename the file (e.g., add `.disabled` extension).
-
-## Example Services
-
-### Portainer (Included)
-
-`001-PortainerAgent.yml` - Portainer Agent (global service on all nodes)
-`002-Portainer.yml` - Portainer CE (container management UI)
-- Accessible at `https://<any-node-ip>:9443`
-- Uses CephFS for persistent storage
-- Deployed in order (Agent first, then CE)
-
-## Service Deployment Order
-
-Services are deployed in **alphabetical order by filename**. Use numeric prefixes to control deployment order:
-
-- `001-PortainerAgent.yml` - Deployed first
-- `002-Portainer.yml` - Deployed second
-- `100-MyApp.yml` - Deployed after Portainer
-
-## Network Requirements
-
-Services should use the pre-created overlay networks:
-
-- **DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION**: Internal-only cluster communication (subnet: 172.17.16.0/20, no external access)
-- **DOCKER-SWARM-CLUSTER-EXTERNAL-INGRESS**: External-facing services (subnet: 172.17.32.0/20)
-
-Example:
 ```yaml
 networks:
   DOCKER-SWARM-CLUSTER-INTERNAL-COMMUNICATION:
     external: true
-  DOCKER-SWARM-CLUSTER-EXTERNAL-INGRESS:
-    external: true
 ```
 
-## Storage
+---
 
-For persistent storage, use CephFS mount paths. The tool automatically replaces storage paths with your configured mount path from the configuration file.
+## Storage Path Replacement
 
-**Pattern Matching:**
-The tool uses regex to find and replace common storage path patterns:
-- `/mnt/MicroCephFS/<pool-name>` → Replaced with your configured `mountPath`
-- `/mnt/GlusterFS/<cluster-name>/data` → Replaced with your configured `mountPath` (legacy support)
+Storage paths are automatically replaced with your configured `mountPath`:
 
-**Example:**
 ```yaml
+# In YAML file:
 volumes:
-  - /mnt/MicroCephFS/docker-swarm-0001/YourService:/data
+  - /mnt/MicroCephFS/docker-swarm-0001/data:/data
+
+# Becomes (if mountPath is /mnt/MicroCephFS/my-cluster):
+volumes:
+  - /mnt/MicroCephFS/my-cluster/data:/data
 ```
 
-If your config has `"mountPath": "/mnt/MicroCephFS/my-cluster"`, the path will be automatically replaced to:
-```yaml
-volumes:
-  - /mnt/MicroCephFS/my-cluster/YourService:/data
+---
+
+## Adding Services
+
+1. Create `XXX-ServiceName.yml` in this directory
+2. Add metadata headers
+3. Run deployment:
+```bash
+./dscotctl-linux-amd64 -configpath dscotctl.json.example
 ```
 
-**Benefits:**
-- ✅ Write service YAMLs once with any storage path pattern
-- ✅ Paths automatically adapt to your cluster configuration
-- ✅ No manual editing needed when changing mount paths
-- ✅ Services remain portable across different cluster configurations
+## Disabling Services
 
-## Deployment Logs
+Change `# ENABLED: true` to `# ENABLED: false` or rename file to `.yml.disabled`
 
-During deployment, `dscotctl` logs:
-- Total services found
-- Enabled vs disabled count
-- Processing progress (e.g., "deploying service 2/5")
-- Success/failure for each service
-- Final metrics (total time, success count, failure count)
-
-## Best Practices
-
-1. **One service per file**: Keep each stack in its own file for easier management
-2. **Use descriptive names**: Make filenames and NAME metadata clear
-3. **Document dependencies**: Use DESCRIPTION to note any prerequisites
-4. **Test before enabling**: Set `ENABLED: false` while testing new services
-5. **Use constraints**: Leverage node labels for service placement
+---
 
 ## Troubleshooting
 
-If a service fails to deploy:
-1. Check the `dscotctl` logs for error details
-2. Verify the YAML syntax is valid
-3. Ensure required networks exist
-4. Check node constraints match your cluster
-5. Verify storage paths are accessible
-
-## Advanced Usage
-
-### Custom Service Names
-
-The stack name defaults to the NAME metadata field. If not specified, it uses the filename without extension.
-
-### Multiple Environments
-
-You can maintain different service directories for different environments:
-
-```bash
-# Production
-dscotctl -config prod.json  # Uses binaries/services/
-
-# Staging (copy services to different location)
-# Modify config to point to different services directory
-```
-
+| Issue | Solution |
+|-------|----------|
+| Service fails to deploy | Check `dscotctl` logs for errors |
+| Network not found | Ensure deployment completed Phase 7 (Swarm setup) |
+| Storage path errors | Verify CephFS is mounted on nodes |
+| Constraint failures | Check node labels match service constraints |
