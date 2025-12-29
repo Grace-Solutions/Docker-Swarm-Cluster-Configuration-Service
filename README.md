@@ -8,16 +8,13 @@ Deploy a complete Docker Swarm cluster in minutes. Copy and paste these commands
 
 ```bash
 # Download binary, config example, and make executable (Linux amd64)
-curl -fsSL https://raw.githubusercontent.com/Grace-Solutions/Docker-Swarm-Cluster-Orchestration-Tool/main/binaries/dscotctl-linux-amd64 -o dscotctl && \
-curl -fsSL https://raw.githubusercontent.com/Grace-Solutions/Docker-Swarm-Cluster-Orchestration-Tool/main/binaries/dscotctl.json.example -o dscotctl.json && \
-chmod +x dscotctl && \
-echo "✅ Downloaded! Now edit dscotctl.json with your nodes and run: ./dscotctl -config dscotctl.json"
-
-# EDIT YOUR CONFIG: Update nodes, credentials, and settings
-nano dscotctl.json
-
+curl -fsSL https://raw.githubusercontent.com/Grace-Solutions/Docker-Swarm-Cluster-Orchestration-Tool/main/binaries/dscotctl-linux-amd64 -O && \
+curl -fsSL https://raw.githubusercontent.com/Grace-Solutions/Docker-Swarm-Cluster-Orchestration-Tool/main/binaries/dscotctl.json.example -O && \
+chmod +x dscotctl-linux-amd64
+# Edit dscotctl.json.example with your nodes, credentials, and settings
+nano dscotctl.json.example
 # Deploy the cluster
-./dscotctl -config dscotctl.json
+./dscotctl-linux-amd64 -configpath dscotctl.json.example
 ```
 
 <details>
@@ -25,17 +22,17 @@ nano dscotctl.json
 
 ```bash
 # Linux ARM64
-curl -fsSL https://raw.githubusercontent.com/Grace-Solutions/Docker-Swarm-Cluster-Orchestration-Tool/main/binaries/dscotctl-linux-arm64 -o dscotctl && chmod +x dscotctl
+curl -fsSL https://raw.githubusercontent.com/Grace-Solutions/Docker-Swarm-Cluster-Orchestration-Tool/main/binaries/dscotctl-linux-arm64 -O && chmod +x dscotctl-linux-arm64
 
 # macOS Intel
-curl -fsSL https://raw.githubusercontent.com/Grace-Solutions/Docker-Swarm-Cluster-Orchestration-Tool/main/binaries/dscotctl-darwin-amd64 -o dscotctl && chmod +x dscotctl
+curl -fsSL https://raw.githubusercontent.com/Grace-Solutions/Docker-Swarm-Cluster-Orchestration-Tool/main/binaries/dscotctl-darwin-amd64 -O && chmod +x dscotctl-darwin-amd64
 
 # macOS Apple Silicon
-curl -fsSL https://raw.githubusercontent.com/Grace-Solutions/Docker-Swarm-Cluster-Orchestration-Tool/main/binaries/dscotctl-darwin-arm64 -o dscotctl && chmod +x dscotctl
+curl -fsSL https://raw.githubusercontent.com/Grace-Solutions/Docker-Swarm-Cluster-Orchestration-Tool/main/binaries/dscotctl-darwin-arm64 -O && chmod +x dscotctl-darwin-arm64
 
 # Windows (PowerShell)
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Grace-Solutions/Docker-Swarm-Cluster-Orchestration-Tool/main/binaries/dscotctl-windows-amd64.exe" -OutFile "dscotctl.exe"
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Grace-Solutions/Docker-Swarm-Cluster-Orchestration-Tool/main/binaries/dscotctl.json.example" -OutFile "dscotctl.json"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Grace-Solutions/Docker-Swarm-Cluster-Orchestration-Tool/main/binaries/dscotctl-windows-amd64.exe" -OutFile "dscotctl-windows-amd64.exe"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Grace-Solutions/Docker-Swarm-Cluster-Orchestration-Tool/main/binaries/dscotctl.json.example" -OutFile "dscotctl.json.example"
 ```
 </details>
 
@@ -115,17 +112,17 @@ graph TB
 ### Deploy a Cluster
 
 ```bash
-./dscotctl -config dscotctl.json
+./dscotctl-linux-amd64 -configpath dscotctl.json.example
 ```
 
 ### Teardown a Cluster
 
 ```bash
 # Teardown cluster (keeps networks and data for connectivity)
-./dscotctl -config dscotctl.json -teardown
+./dscotctl-linux-amd64 -configpath dscotctl.json.example -teardown
 
 # Full teardown (removes everything including overlays - WARNING: destructive)
-./dscotctl -config dscotctl.json -teardown -remove-overlays
+./dscotctl-linux-amd64 -configpath dscotctl.json.example -teardown -remove-overlays
 ```
 
 ---
@@ -360,11 +357,11 @@ Execute custom scripts before or after deployment:
 ## CLI Reference
 
 ```bash
-dscotctl -config <config.json>              # Deploy cluster
-dscotctl -config <config.json> -teardown    # Teardown cluster
-dscotctl -config <config.json> -teardown -remove-overlays  # Full teardown
-dscotctl -version                           # Show version
-dscotctl -help                              # Show help
+dscotctl-linux-amd64 -configpath <config.json>              # Deploy cluster
+dscotctl-linux-amd64 -configpath <config.json> -teardown    # Teardown cluster
+dscotctl-linux-amd64 -configpath <config.json> -teardown -remove-overlays  # Full teardown
+dscotctl-linux-amd64 -version                               # Show version
+dscotctl-linux-amd64 -help                                  # Show help
 ```
 
 ---
