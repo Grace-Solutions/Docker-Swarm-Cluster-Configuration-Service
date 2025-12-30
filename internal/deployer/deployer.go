@@ -1678,7 +1678,7 @@ func createDefaultOverlayNetworks(ctx context.Context, sshPool *ssh.Pool, primar
 
 		netType := "overlay"
 		if network.Internal {
-			netType = "internal"
+			netType = "overlay (internal)"
 		}
 		log.Infow("✅ overlay network created", "network", network.Name, "subnet", network.Subnet, "type", netType)
 	}

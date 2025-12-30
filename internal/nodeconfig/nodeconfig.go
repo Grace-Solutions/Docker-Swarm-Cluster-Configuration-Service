@@ -149,19 +149,44 @@ func (nc *NodeConfigurator) install1Panel(ctx context.Context, hostname string) 
 	nc.log.Infow("installing 1Panel", "host", hostname)
 
 	// Check if already installed
-	checkCmd := "which 1pctl && echo 'installed' || echo 'not_installed'"
+	checkCmd := "command -v 1pctl >/dev/null 2>&1 && echo 'installed' || echo 'not_installed'"
 	stdout, _, _ := nc.sshPool.Run(ctx, hostname, checkCmd)
-	if stdout == "installed\n" || stdout == "installed" {
+	if strings.TrimSpace(stdout) == "installed" {
 		nc.log.Infow("1Panel already installed", "host", hostname)
 		return nil
 	}
 
-	// Install 1Panel using official script
+	// Install 1Panel using official script with non-interactive mode
 	installScript := `#!/bin/bash
 set -e
 
-# Install 1Panel using official installer
-curl -fsSL https://resource.1panel.hk/quick_start.sh | bash
+# Install required dependencies
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y curl
+
+# Create downloads directory
+DOWNLOADDIR="/tmp/1panel-install"
+mkdir -p "$DOWNLOADDIR"
+
+# Download the quick start script
+SCRIPTURL="https://resource.1panel.hk/quick_start.sh"
+SCRIPTFILE="$DOWNLOADDIR/quick_start.sh"
+curl -fsSL -o "$SCRIPTFILE" "$SCRIPTURL"
+chmod +x "$SCRIPTFILE"
+
+# Run the installer non-interactively
+# The script prompts for: port, entrance, username, password
+# We provide defaults via heredoc
+bash "$SCRIPTFILE" <<EOF
+10086
+1panel
+admin
+$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 16)
+EOF
+
+# Cleanup
+rm -rf "$DOWNLOADDIR"
 
 echo "1Panel installed successfully"
 `
@@ -169,7 +194,7 @@ echo "1Panel installed successfully"
 		return fmt.Errorf("1panel installation failed: %w (stderr: %s)", err, stderr)
 	}
 
-	nc.log.Infow("1Panel installed successfully", "host", hostname)
+	nc.log.Infow("1Panel installed successfully", "host", hostname, "accessUrl", fmt.Sprintf("http://%s:10086/1panel", hostname))
 	return nil
 }
 
@@ -178,23 +203,27 @@ func (nc *NodeConfigurator) installCockpit(ctx context.Context, hostname string)
 	nc.log.Infow("installing Cockpit", "host", hostname)
 
 	// Check if already installed
-	checkCmd := "which cockpit-ws && echo 'installed' || echo 'not_installed'"
+	checkCmd := "dpkg -l cockpit 2>/dev/null | grep -q '^ii' && echo 'installed' || echo 'not_installed'"
 	stdout, _, _ := nc.sshPool.Run(ctx, hostname, checkCmd)
-	if stdout == "installed\n" || stdout == "installed" {
+	if strings.TrimSpace(stdout) == "installed" {
 		nc.log.Infow("Cockpit already installed", "host", hostname)
 		return nil
 	}
 
-	// Install Cockpit
+	// Install Cockpit with all recommended packages
 	installScript := `#!/bin/bash
 set -e
 
-# Install Cockpit
+# Install required dependencies
+export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y cockpit
+
+# Install Cockpit with common plugins
+apt-get install -y --install-recommends cockpit cockpit-storaged cockpit-networkmanager cockpit-packagekit cockpit-pcp
 
 # Enable and start Cockpit
-systemctl enable --now cockpit.socket
+systemctl enable cockpit.socket
+systemctl start cockpit.socket
 
 echo "Cockpit installed successfully"
 `
@@ -202,7 +231,7 @@ echo "Cockpit installed successfully"
 		return fmt.Errorf("cockpit installation failed: %w (stderr: %s)", err, stderr)
 	}
 
-	nc.log.Infow("Cockpit installed successfully", "host", hostname)
+	nc.log.Infow("Cockpit installed successfully", "host", hostname, "accessUrl", fmt.Sprintf("https://%s:9090", hostname))
 	return nil
 }
 

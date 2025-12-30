@@ -256,9 +256,9 @@ func EnsureOverlayNetwork(ctx context.Context, spec NetworkSpec) error {
 		return fmt.Errorf("swarm: network create %s failed: %w (output: %s)", spec.Name, err, strings.TrimSpace(string(out)))
 	}
 
-	netType := "external"
+	netType := "overlay"
 	if spec.Internal {
-		netType = "internal-only"
+		netType = "overlay (internal)"
 	}
 	log.Infow("✅ swarm overlay network created", "name", spec.Name, "subnet", spec.Subnet, "gateway", spec.Gateway, "type", netType)
 	return nil

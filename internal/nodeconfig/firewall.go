@@ -15,7 +15,55 @@ func (nc *NodeConfigurator) configureFirewall(ctx context.Context, node config.N
 	hostname := node.SSHFQDNorIP
 	fw := node.Firewall
 
-	nc.log.Infow("configuring iptables firewall", "host", hostname)
+	// Count profiles and port rules that will be applied
+	profileCount := 0
+	for _, profile := range fw.Profiles {
+		if profile.Enabled {
+			profileCount++
+		}
+	}
+	portRuleCount := 0
+	for _, rule := range fw.Ports {
+		if rule.Enabled {
+			portRuleCount++
+		}
+	}
+
+	nc.log.Infow("configuring iptables firewall",
+		"host", hostname,
+		"profiles", profileCount,
+		"portRules", portRuleCount,
+	)
+
+	// Log each enabled profile
+	for _, profile := range fw.Profiles {
+		if profile.Enabled {
+			nc.log.Infow("  applying profile", "host", hostname, "profile", profile.Name)
+		}
+	}
+
+	// Log each enabled port rule
+	for _, rule := range fw.Ports {
+		if rule.Enabled {
+			protocols := strings.Join(rule.Protocol, ",")
+			sources := rule.GetSources()
+			sourcesStr := strings.Join(sources, ",")
+			// Format ports/ranges
+			var portStrs []string
+			for _, p := range rule.RangeList {
+				portStrs = append(portStrs, fmt.Sprintf("%v", p))
+			}
+			portsStr := strings.Join(portStrs, ",")
+			nc.log.Infow("  applying port rule",
+				"host", hostname,
+				"ports", portsStr,
+				"protocol", protocols,
+				"sources", sourcesStr,
+				"action", rule.GetAction(),
+				"comment", rule.Comment,
+			)
+		}
+	}
 
 	// Build the firewall configuration script
 	var scriptBuilder strings.Builder

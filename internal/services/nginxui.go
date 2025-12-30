@@ -726,13 +726,12 @@ func WriteNginxUICredentials(ctx context.Context, sshPool *ssh.Pool, hubNode str
 		credsPath = "/root/.dscotctl/nginxui-credentials.json"
 	}
 
-	// Create directory with proper permissions
+	// Create directory
 	dir := filepath.ToSlash(filepath.Dir(credsPath))
-	mkdirCmd := fmt.Sprintf("mkdir -p '%s' && chmod 700 '%s'", dir, dir)
+	mkdirCmd := fmt.Sprintf("mkdir -p '%s'", dir)
 	if _, stderr, err := sshPool.Run(ctx, hubNode, mkdirCmd); err != nil {
 		return fmt.Errorf("failed to create credentials directory %s: %w (stderr: %s)", dir, err, stderr)
 	}
-	log.Infow("credentials directory ensured", "path", dir)
 
 	// Sort containers to identify hub (first alphabetically)
 	sortedContainers := make([]NginxUIContainerInfo, len(containers))

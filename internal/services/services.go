@@ -216,7 +216,7 @@ func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string
 	if storageMountPath != "" {
 		secretsDir := filepath.ToSlash(filepath.Join(storageMountPath, "secrets"))
 		log.Infow("creating secrets directory on shared storage", "path", secretsDir)
-		mkdirCmd := fmt.Sprintf("mkdir -p '%s' && chmod 700 '%s'", secretsDir, secretsDir)
+		mkdirCmd := fmt.Sprintf("mkdir -p '%s'", secretsDir)
 		if _, stderr, err := sshPool.Run(ctx, primaryMaster, mkdirCmd); err != nil {
 			log.Warnw("failed to create secrets directory", "path", secretsDir, "error", err, "stderr", stderr)
 		}
@@ -829,9 +829,9 @@ func verifyDeployment(ctx context.Context, sshPool *ssh.Pool, host string, stack
 			net := networks[0]
 			netType := "overlay"
 			if net.Ingress {
-				netType = "ingress"
+				netType = "overlay (ingress)"
 			} else if net.Internal {
-				netType = "internal"
+				netType = "overlay (internal)"
 			}
 			subnet := ""
 			if len(net.IPAM.Config) > 0 {
