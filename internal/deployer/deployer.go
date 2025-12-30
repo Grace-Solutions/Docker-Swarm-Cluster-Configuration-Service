@@ -316,18 +316,18 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 	}
 
 	// Build hostname to SSH mapping for container discovery
-	// Uses NewHostname if set, otherwise queries the node for its hostname
+	// Always queries the node for its actual hostname - this is what Docker Swarm uses
 	nodeHostnameToSSH := make(map[string]string)
 	for _, node := range enabledNodes {
-		hostname := node.NewHostname
-		if hostname == "" {
-			stdout, _, err := sshPool.Run(ctx, node.SSHFQDNorIP, "hostname 2>/dev/null")
-			if err == nil {
-				hostname = strings.TrimSpace(stdout)
-			}
+		stdout, _, err := sshPool.Run(ctx, node.SSHFQDNorIP, "hostname 2>/dev/null")
+		if err != nil {
+			log.Warnw("failed to query hostname from node", "sshHost", node.SSHFQDNorIP, "error", err)
+			continue
 		}
+		hostname := strings.TrimSpace(stdout)
 		if hostname != "" {
 			nodeHostnameToSSH[hostname] = node.SSHFQDNorIP
+			log.Debugw("mapped node hostname to SSH", "hostname", hostname, "sshHost", node.SSHFQDNorIP)
 		}
 	}
 
