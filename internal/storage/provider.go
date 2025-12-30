@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"path/filepath"
 	"strings"
 
 	"clusterctl/internal/config"
@@ -448,8 +448,8 @@ func SetupCluster(ctx context.Context, sshPool *ssh.Pool, provider Provider, man
 
 			// Step 8b: Write S3 credentials file if configured
 			if mcCfg.S3CredentialsFile != "" {
-				log.Infow("→ Step 8b: Writing S3 credentials file", "path", mcCfg.S3CredentialsFile)
-				if err := writeS3CredentialsFile(mcCfg.S3CredentialsFile, rgwInfo); err != nil {
+				log.Infow("→ Step 8b: Writing S3 credentials file", "path", mcCfg.S3CredentialsFile, "node", workers[0])
+				if err := writeS3CredentialsFile(ctx, sshPool, workers[0], mcCfg.S3CredentialsFile, rgwInfo); err != nil {
 					log.Warnw("⚠️ Failed to write S3 credentials file (non-fatal)", "path", mcCfg.S3CredentialsFile, "error", err)
 				} else {
 					log.Infow("✓ S3 credentials written", "path", mcCfg.S3CredentialsFile)
@@ -495,8 +495,8 @@ type S3Credentials struct {
 	BucketName string   `json:"bucketName,omitempty"`
 }
 
-// writeS3CredentialsFile writes S3 credentials to a JSON file.
-func writeS3CredentialsFile(path string, info *RadosGatewayInfo) error {
+// writeS3CredentialsFile writes S3 credentials to a JSON file on a remote node via SSH.
+func writeS3CredentialsFile(ctx context.Context, sshPool *ssh.Pool, node, path string, info *RadosGatewayInfo) error {
 	creds := S3Credentials{
 		Endpoints:  info.Endpoints,
 		AccessKey:  info.AccessKey,
@@ -510,8 +510,16 @@ func writeS3CredentialsFile(path string, info *RadosGatewayInfo) error {
 		return fmt.Errorf("failed to marshal credentials: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return fmt.Errorf("failed to write credentials file: %w", err)
+	// Create directory and write file via SSH
+	dir := filepath.Dir(path)
+	mkdirCmd := fmt.Sprintf("mkdir -p '%s'", dir)
+	if _, stderr, err := sshPool.Run(ctx, node, mkdirCmd); err != nil {
+		return fmt.Errorf("failed to create credentials directory: %w (stderr: %s)", err, stderr)
+	}
+
+	writeCmd := fmt.Sprintf("cat > '%s' << 'EOF'\n%s\nEOF\nchmod 600 '%s'", path, string(data), path)
+	if _, stderr, err := sshPool.Run(ctx, node, writeCmd); err != nil {
+		return fmt.Errorf("failed to write credentials file: %w (stderr: %s)", err, stderr)
 	}
 
 	return nil
