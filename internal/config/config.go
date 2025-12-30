@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"clusterctl/internal/defaults"
+	"dscotctl/internal/defaults"
 )
 
 // Config represents the cluster configuration loaded from JSON.

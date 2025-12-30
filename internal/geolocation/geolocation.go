@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"time"
 
-	"clusterctl/internal/logging"
-	"clusterctl/internal/ssh"
+	"dscotctl/internal/logging"
+	"dscotctl/internal/ssh"
 )
 
 // GeoInfo represents geolocation information for a node.

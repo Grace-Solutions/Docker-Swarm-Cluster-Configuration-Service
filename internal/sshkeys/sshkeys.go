@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"clusterctl/internal/logging"
+	"dscotctl/internal/logging"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 )

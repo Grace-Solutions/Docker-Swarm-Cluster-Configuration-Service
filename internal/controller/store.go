@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"clusterctl/internal/logging"
+	"dscotctl/internal/logging"
 )
 
 // clusterState is the on-disk representation of controller state.

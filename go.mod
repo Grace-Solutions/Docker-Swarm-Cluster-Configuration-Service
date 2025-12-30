@@ -1,4 +1,4 @@
-module clusterctl
+module dscotctl
 
 go 1.24.0
 

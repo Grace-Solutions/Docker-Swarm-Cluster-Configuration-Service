@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"clusterctl/internal/config"
-	"clusterctl/internal/defaults"
-	"clusterctl/internal/ipdetect"
-	"clusterctl/internal/logging"
-	"clusterctl/internal/ssh"
+	"dscotctl/internal/config"
+	"dscotctl/internal/defaults"
+	"dscotctl/internal/ipdetect"
+	"dscotctl/internal/logging"
+	"dscotctl/internal/ssh"
 )
 
 // KeepalivedNodeConfig holds the resolved configuration for a single node.

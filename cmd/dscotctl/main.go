@@ -10,9 +10,9 @@ import (
 	"strings"
 	"syscall"
 
-	"clusterctl/internal/config"
-	"clusterctl/internal/deployer"
-	"clusterctl/internal/logging"
+	"dscotctl/internal/config"
+	"dscotctl/internal/deployer"
+	"dscotctl/internal/logging"
 )
 
 // Version information - set via ldflags during build

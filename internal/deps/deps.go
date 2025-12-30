@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"clusterctl/internal/logging"
+	"dscotctl/internal/logging"
 )
 
 // EnsureDocker makes sure the Docker CLI is available. If it is missing, a best-effort

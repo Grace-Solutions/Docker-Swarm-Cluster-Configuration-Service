@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"clusterctl/internal/logging"
-	"clusterctl/internal/orchestrator"
-	"clusterctl/internal/ssh"
-	"clusterctl/internal/swarm"
+	"dscotctl/internal/logging"
+	"dscotctl/internal/orchestrator"
+	"dscotctl/internal/ssh"
+	"dscotctl/internal/swarm"
 )
 
 // Serve starts the controller TCP server and blocks until the context is

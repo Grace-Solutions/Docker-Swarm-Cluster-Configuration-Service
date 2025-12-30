@@ -7,9 +7,9 @@ import (
 	"os/exec"
 	"strings"
 
-	"clusterctl/internal/defaults"
-	"clusterctl/internal/deps"
-	"clusterctl/internal/logging"
+	"dscotctl/internal/defaults"
+	"dscotctl/internal/deps"
+	"dscotctl/internal/logging"
 )
 
 // IsActive reports whether this node is already part of a Swarm cluster.

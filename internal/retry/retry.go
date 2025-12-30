@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"clusterctl/internal/logging"
+	"dscotctl/internal/logging"
 )
 
 // Config defines retry behavior for operations.

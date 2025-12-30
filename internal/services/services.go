@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"clusterctl/internal/defaults"
-	"clusterctl/internal/logging"
-	"clusterctl/internal/ssh"
+	"dscotctl/internal/defaults"
+	"dscotctl/internal/logging"
+	"dscotctl/internal/ssh"
 )
 
 // ServiceMetadata represents metadata parsed from a service YAML file

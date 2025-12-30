@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"clusterctl/internal/retry"
+	"dscotctl/internal/retry"
 )
 
 // Client wraps an SSH client connection for remote command execution.

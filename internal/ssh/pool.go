@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"clusterctl/internal/logging"
+	"dscotctl/internal/logging"
 )
 
 // Pool manages SSH connections to multiple hosts.

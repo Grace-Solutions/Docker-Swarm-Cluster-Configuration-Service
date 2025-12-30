@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"clusterctl/internal/logging"
-	"clusterctl/internal/ssh"
+	"dscotctl/internal/logging"
+	"dscotctl/internal/ssh"
 )
 
 type ServeOptions struct {

@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"clusterctl/internal/config"
-	"clusterctl/internal/logging"
-	"clusterctl/internal/ssh"
+	"dscotctl/internal/config"
+	"dscotctl/internal/logging"
+	"dscotctl/internal/ssh"
 )
 
 // Provider defines the interface for distributed storage backends.

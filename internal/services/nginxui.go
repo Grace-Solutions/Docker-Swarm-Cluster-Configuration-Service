@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"clusterctl/internal/logging"
-	"clusterctl/internal/ssh"
+	"dscotctl/internal/logging"
+	"dscotctl/internal/ssh"
 )
 
 // S3Credentials represents the S3 credentials file format.

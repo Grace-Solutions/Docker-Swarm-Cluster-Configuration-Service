@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"clusterctl/internal/logging"
-	"clusterctl/internal/retry"
-	"clusterctl/internal/ssh"
+	"dscotctl/internal/logging"
+	"dscotctl/internal/retry"
+	"dscotctl/internal/ssh"
 )
 
 // SwarmSetup orchestrates Docker Swarm setup across all nodes via SSH.

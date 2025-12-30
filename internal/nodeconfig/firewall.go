@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"clusterctl/internal/config"
+	"dscotctl/internal/config"
 )
 
 // configureFirewall configures iptables firewall rules on the node.

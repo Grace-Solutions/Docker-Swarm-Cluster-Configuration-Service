@@ -8,7 +8,7 @@ import (
 	"net"
 	"strings"
 
-	"clusterctl/internal/ssh"
+	"dscotctl/internal/ssh"
 )
 
 // dockerNetworkListEntry represents a single line from `docker network ls --format json`.

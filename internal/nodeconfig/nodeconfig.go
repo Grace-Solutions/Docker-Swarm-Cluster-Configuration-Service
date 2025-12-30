@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	"clusterctl/internal/config"
-	"clusterctl/internal/logging"
-	"clusterctl/internal/ssh"
+	"dscotctl/internal/config"
+	"dscotctl/internal/logging"
+	"dscotctl/internal/ssh"
 )
 
 // loggerInterface defines the logging methods we need.

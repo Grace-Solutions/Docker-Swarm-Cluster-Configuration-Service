@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"clusterctl/internal/controller"
-	"clusterctl/internal/ipdetect"
-	"clusterctl/internal/logging"
-	"clusterctl/internal/overlay"
-	"clusterctl/internal/swarm"
+	"dscotctl/internal/controller"
+	"dscotctl/internal/ipdetect"
+	"dscotctl/internal/logging"
+	"dscotctl/internal/overlay"
+	"dscotctl/internal/swarm"
 )
 
 type JoinOptions struct {

@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"clusterctl/internal/config"
-	"clusterctl/internal/defaults"
-	"clusterctl/internal/ipdetect"
-	"clusterctl/internal/logging"
-	"clusterctl/internal/ssh"
+	"dscotctl/internal/config"
+	"dscotctl/internal/defaults"
+	"dscotctl/internal/ipdetect"
+	"dscotctl/internal/logging"
+	"dscotctl/internal/ssh"
 )
 
 // MicroCephProvider implements the Provider interface for MicroCeph.

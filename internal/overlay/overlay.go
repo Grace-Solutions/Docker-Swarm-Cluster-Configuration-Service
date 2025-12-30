@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"clusterctl/internal/deps"
-	"clusterctl/internal/logging"
+	"dscotctl/internal/deps"
+	"dscotctl/internal/logging"
 )
 
 // errString makes it easy to log an error value that may be nil.
