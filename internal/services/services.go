@@ -40,14 +40,15 @@ type DeploymentMetrics struct {
 
 // ClusterInfo contains information about the cluster composition for dynamic constraint handling
 type ClusterInfo struct {
-	HasDedicatedWorkers       bool     // true if there are nodes with role="worker" (not just managers or "both")
-	AllNodes                  []string // list of all SSH-accessible nodes for directory creation
-	DistributedStorageEnabled bool     // true if distributed storage is enabled (shared across nodes)
-	PrimaryMaster             string   // primary master node SSH address
-	S3CredentialsFile         string   // path to S3 credentials file (if RGW enabled)
-	RadosGatewayPort          int      // RADOS Gateway port (if RGW enabled)
-	KeepalivedVIP             string   // virtual IP address if keepalived enabled (empty if not)
-	PortainerEnabled          bool     // true if Portainer service is deployed
+	HasDedicatedWorkers       bool              // true if there are nodes with role="worker" (not just managers or "both")
+	AllNodes                  []string          // list of all SSH-accessible nodes for directory creation
+	DistributedStorageEnabled bool              // true if distributed storage is enabled (shared across nodes)
+	PrimaryMaster             string            // primary master node SSH address
+	S3CredentialsFile         string            // path to S3 credentials file (if RGW enabled)
+	RadosGatewayPort          int               // RADOS Gateway port (if RGW enabled)
+	KeepalivedVIP             string            // virtual IP address if keepalived enabled (empty if not)
+	PortainerEnabled          bool              // true if Portainer service is deployed
+	NodeHostnameToSSH         map[string]string // Docker Swarm hostname -> SSH address mapping
 }
 
 const (
@@ -316,7 +317,7 @@ func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string
 			// Wait a moment for containers to fully start
 			time.Sleep(3 * time.Second)
 
-			containers, err := DiscoverNginxUIContainers(ctx, sshPool, primaryMaster, swarmServiceName)
+			containers, err := DiscoverNginxUIContainers(ctx, sshPool, primaryMaster, swarmServiceName, clusterInfo.NodeHostnameToSSH)
 			log.Infow("NginxUI container discovery result",
 				"containerCount", len(containers),
 				"error", err,
@@ -334,7 +335,7 @@ func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string
 				time.Sleep(10 * time.Second)
 
 				// Re-discover containers after restart (they have new IDs)
-				containers, err = DiscoverNginxUIContainers(ctx, sshPool, primaryMaster, swarmServiceName)
+				containers, err = DiscoverNginxUIContainers(ctx, sshPool, primaryMaster, swarmServiceName, clusterInfo.NodeHostnameToSSH)
 				if err != nil {
 					log.Warnw("failed to re-discover NginxUI containers after restart", "error", err)
 				}

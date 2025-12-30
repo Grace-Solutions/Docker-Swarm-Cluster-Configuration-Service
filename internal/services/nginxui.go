@@ -334,11 +334,12 @@ type NginxUIContainerInfo struct {
 // DiscoverNginxUIContainers discovers all running NginxUI containers and their hostnames.
 // This should be called AFTER the NginxUI service is deployed.
 // serviceName is the full Docker Swarm service name (e.g., "NginxUI_LoadBalancer")
-func DiscoverNginxUIContainers(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, serviceName string) ([]NginxUIContainerInfo, error) {
+// nodeHostnameToSSH maps Docker Swarm node hostnames to SSH addresses
+func DiscoverNginxUIContainers(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, serviceName string, nodeHostnameToSSH map[string]string) ([]NginxUIContainerInfo, error) {
 	log := logging.L().With("component", "nginxui")
 
 	// Get all tasks for the service with their node and container info
-	// Format: NodeHostname|ContainerID
+	// Format: NodeHostname|TaskID
 	cmd := fmt.Sprintf(`docker service ps %s --filter 'desired-state=running' --format '{{.Node}}|{{.ID}}' --no-trunc`, serviceName)
 	log.Infow("discovering NginxUI containers", "command", cmd)
 
@@ -365,26 +366,33 @@ func DiscoverNginxUIContainers(ctx context.Context, sshPool *ssh.Pool, primaryMa
 		nodeHostname := parts[0]
 		taskID := parts[1]
 
+		// Look up the SSH address for this node hostname
+		sshHost, ok := nodeHostnameToSSH[nodeHostname]
+		if !ok {
+			log.Warnw("no SSH mapping found for node hostname", "nodeHostname", nodeHostname, "availableMappings", nodeHostnameToSSH)
+			continue
+		}
+
 		// Get the container ID for this task on its node
 		// Query the specific node to get container info
 		containerCmd := fmt.Sprintf(`docker ps --filter 'label=com.docker.swarm.task.id=%s' --format '{{.ID}}' --no-trunc`, taskID)
-		containerStdout, _, err := sshPool.Run(ctx, nodeHostname, containerCmd)
+		containerStdout, _, err := sshPool.Run(ctx, sshHost, containerCmd)
 		if err != nil {
-			log.Warnw("failed to get container ID", "node", nodeHostname, "taskID", taskID, "error", err)
+			log.Warnw("failed to get container ID", "node", nodeHostname, "sshHost", sshHost, "taskID", taskID, "error", err)
 			continue
 		}
 
 		containerID := strings.TrimSpace(containerStdout)
 		if containerID == "" {
-			log.Warnw("no container found for task", "node", nodeHostname, "taskID", taskID)
+			log.Warnw("no container found for task", "node", nodeHostname, "sshHost", sshHost, "taskID", taskID)
 			continue
 		}
 
 		// Get the container's hostname from docker inspect
 		hostnameCmd := fmt.Sprintf(`docker inspect %s --format '{{.Config.Hostname}}'`, containerID)
-		hostnameStdout, _, err := sshPool.Run(ctx, nodeHostname, hostnameCmd)
+		hostnameStdout, _, err := sshPool.Run(ctx, sshHost, hostnameCmd)
 		if err != nil {
-			log.Warnw("failed to get container hostname", "node", nodeHostname, "containerID", containerID, "error", err)
+			log.Warnw("failed to get container hostname", "node", nodeHostname, "sshHost", sshHost, "containerID", containerID, "error", err)
 			continue
 		}
 
@@ -406,6 +414,7 @@ func DiscoverNginxUIContainers(ctx context.Context, sshPool *ssh.Pool, primaryMa
 
 		log.Infow("discovered NginxUI container",
 			"node", nodeHostname,
+			"sshHost", sshHost,
 			"containerHostname", containerHostname,
 			"containerID", containerID[:12],
 		)

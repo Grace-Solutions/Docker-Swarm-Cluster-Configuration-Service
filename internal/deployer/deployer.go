@@ -315,6 +315,22 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 		}
 	}
 
+	// Build hostname to SSH mapping for container discovery
+	// Uses NewHostname if set, otherwise queries the node for its hostname
+	nodeHostnameToSSH := make(map[string]string)
+	for _, node := range enabledNodes {
+		hostname := node.NewHostname
+		if hostname == "" {
+			stdout, _, err := sshPool.Run(ctx, node.SSHFQDNorIP, "hostname 2>/dev/null")
+			if err == nil {
+				hostname = strings.TrimSpace(stdout)
+			}
+		}
+		if hostname != "" {
+			nodeHostnameToSSH[hostname] = node.SSHFQDNorIP
+		}
+	}
+
 	// Determine if cluster has dedicated workers for placement constraint handling
 	// sshWorkers only contains nodes with role="worker" (not "both" or "manager")
 	clusterInfo := services.ClusterInfo{
@@ -326,6 +342,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 		RadosGatewayPort:          radosGatewayPort,
 		KeepalivedVIP:             keepalivedVIP,
 		PortainerEnabled:          portainerEnabled,
+		NodeHostnameToSSH:         nodeHostnameToSSH,
 	}
 	metrics, err := services.DeployServices(ctx, sshPool, primaryMaster, cfg.GlobalSettings.ServiceDefinitionDirectory, storageMountPath, clusterInfo)
 	if err != nil {
