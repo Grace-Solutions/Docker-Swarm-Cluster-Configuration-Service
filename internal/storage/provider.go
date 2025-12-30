@@ -517,7 +517,7 @@ func writeS3CredentialsFile(ctx context.Context, sshPool *ssh.Pool, node, path s
 		return fmt.Errorf("failed to create credentials directory: %w (stderr: %s)", err, stderr)
 	}
 
-	writeCmd := fmt.Sprintf("cat > '%s' << 'EOF'\n%s\nEOF\nchmod 600 '%s'", path, string(data), path)
+	writeCmd := fmt.Sprintf("cat > '%s' << 'EOF'\n%s\nEOF", path, string(data))
 	if _, stderr, err := sshPool.Run(ctx, node, writeCmd); err != nil {
 		return fmt.Errorf("failed to write credentials file: %w (stderr: %s)", err, stderr)
 	}
