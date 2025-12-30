@@ -36,7 +36,6 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 	// Track overall deployment metrics
 	startTime := time.Now()
 	var phasesCompleted int
-	var phasesFailed int
 
 	// Count enabled/disabled nodes
 	enabledNodes := getEnabledNodes(cfg)
@@ -66,6 +65,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("failed to create SSH pool: %w", err)
 	}
 	log.Infow("✅ SSH keys and connection pool ready")
+	phasesCompleted++
 
 	// Phase 2: Set hostnames if configured
 	log.Infow("Phase 2: Setting hostnames")
@@ -73,6 +73,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("failed to set hostnames: %w", err)
 	}
 	log.Infow("✅ Hostnames configured")
+	phasesCompleted++
 
 	// Phase 2.5: Set root password if configured
 	if cfg.GlobalSettings.SetRootPassword != "" {
@@ -84,6 +85,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 	} else {
 		log.Infow("Phase 2.5: Skipping root password (not configured)")
 	}
+	phasesCompleted++
 
 	// Phase 3: Execute pre-deployment scripts
 	log.Infow("Phase 3: Executing pre-deployment scripts")
@@ -91,6 +93,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("failed to execute pre-deployment scripts: %w", err)
 	}
 	log.Infow("✅ Pre-deployment scripts complete")
+	phasesCompleted++
 
 	// Phase 4: Install dependencies on all nodes
 	log.Infow("Phase 4: Installing dependencies on all nodes")
@@ -98,6 +101,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("failed to install dependencies: %w", err)
 	}
 	log.Infow("✅ Dependencies installed")
+	phasesCompleted++
 
 	// Phase 5: Configure overlay network on all nodes
 	log.Infow("Phase 5: Configuring overlay network")
@@ -105,6 +109,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("failed to configure overlay network: %w", err)
 	}
 	log.Infow("✅ Overlay network configured")
+	phasesCompleted++
 
 	// Phase 6: Setup distributed storage if enabled
 	// Storage uses Swarm roles: managers become MON nodes, workers become OSD nodes
@@ -156,6 +161,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 	} else {
 		log.Infow("Phase 6: Skipping distributed storage (no nodes with storageEnabled)")
 	}
+	phasesCompleted++
 
 	// Phase 7: Setup Docker Swarm
 	log.Infow("Phase 7: Setting up Docker Swarm")
@@ -238,6 +244,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("failed to create overlay networks: %w", err)
 	}
 	log.Infow("✅ Overlay networks created")
+	phasesCompleted++
 
 	// Phase 8: Detect geolocation and apply node labels
 	log.Infow("Phase 8: Detecting geolocation and applying node labels")
@@ -245,6 +252,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("failed to apply node labels: %w", err)
 	}
 	log.Infow("✅ Node labels applied")
+	phasesCompleted++
 
 	// Phase 8b: Configure Keepalived for high availability (if enabled)
 	var keepalivedVIP string // Used later for credentials file
@@ -266,6 +274,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 			}
 		}
 	}
+	phasesCompleted++
 
 	// Phase 8c: Configure per-node settings (ManagementPanel, Firewall)
 	log.Infow("Phase 8c: Configuring per-node settings (ManagementPanel, Firewall)")
@@ -275,6 +284,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 	} else {
 		log.Infow("✅ Per-node configuration complete")
 	}
+	phasesCompleted++
 
 	// Phase 9: Deploy services from YAML files
 	log.Infow("Phase 9: Deploying services")
@@ -331,6 +341,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 			"duration", metrics.Duration.String(),
 		)
 	}
+	phasesCompleted++
 
 	// Phase 10: Execute post-deployment scripts
 	log.Infow("Phase 10: Executing post-deployment scripts")
@@ -338,6 +349,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("failed to execute post-deployment scripts: %w", err)
 	}
 	log.Infow("✅ Post-deployment scripts complete")
+	phasesCompleted++
 
 	// Phase 11: Reboot nodes if configured
 	log.Infow("Phase 11: Rebooting nodes if configured")
@@ -345,6 +357,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("failed to reboot nodes: %w", err)
 	}
 	log.Infow("✅ Reboot initiated for configured nodes")
+	phasesCompleted++
 
 	// Phase 12: Remove SSH public key from nodes if configured
 	if cfg.GlobalSettings.RemoveSSHPublicKeyOnCompletion {
@@ -358,6 +371,7 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 	} else {
 		log.Infow("Phase 12: Skipping SSH public key removal (removeSSHPublicKeyOnCompletion=false)")
 	}
+	phasesCompleted++
 
 	// Calculate final metrics
 	endTime := time.Now()
@@ -366,7 +380,6 @@ func Deploy(ctx context.Context, cfg *config.Config) error {
 	log.Infow("🎉 Cluster deployment complete!",
 		"totalDuration", duration.String(),
 		"phasesCompleted", phasesCompleted,
-		"phasesFailed", phasesFailed,
 		"startTime", startTime.Format(time.RFC3339),
 		"endTime", endTime.Format(time.RFC3339),
 	)
