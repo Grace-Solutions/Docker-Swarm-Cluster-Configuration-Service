@@ -511,13 +511,15 @@ func writeS3CredentialsFile(ctx context.Context, sshPool *ssh.Pool, node, path s
 	}
 
 	// Create directory and write file via SSH
-	dir := filepath.Dir(path)
+	// Use filepath.ToSlash to ensure forward slashes for Linux paths (path may come from Windows)
+	linuxPath := filepath.ToSlash(path)
+	dir := filepath.ToSlash(filepath.Dir(linuxPath))
 	mkdirCmd := fmt.Sprintf("mkdir -p '%s'", dir)
 	if _, stderr, err := sshPool.Run(ctx, node, mkdirCmd); err != nil {
 		return fmt.Errorf("failed to create credentials directory: %w (stderr: %s)", err, stderr)
 	}
 
-	writeCmd := fmt.Sprintf("cat > '%s' << 'EOF'\n%s\nEOF", path, string(data))
+	writeCmd := fmt.Sprintf("cat > '%s' << 'EOF'\n%s\nEOF", linuxPath, string(data))
 	if _, stderr, err := sshPool.Run(ctx, node, writeCmd); err != nil {
 		return fmt.Errorf("failed to write credentials file: %w (stderr: %s)", err, stderr)
 	}

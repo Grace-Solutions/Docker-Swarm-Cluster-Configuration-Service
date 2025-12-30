@@ -369,7 +369,7 @@ func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string
 			var creds *NginxUICredentials
 			if len(containers) > 0 {
 				var err error
-				creds, err = ResetNginxUIAdminPassword(ctx, sshPool, primaryMaster, containers)
+				creds, err = ResetNginxUIAdminPassword(ctx, sshPool, containers)
 				if err != nil {
 					log.Warnw("failed to set NginxUI admin password", "error", err)
 				} else {

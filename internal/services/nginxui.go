@@ -329,6 +329,7 @@ type NginxUIContainerInfo struct {
 	NodeHostname      string // Docker Swarm node hostname (e.g., DOCKER-SWARM-NODE-0000)
 	ContainerHostname string // Container's internal hostname (from docker inspect .Config.Hostname)
 	ContainerID       string // Container ID
+	SSHHost           string // SSH address for the node (IP or hostname that SSH can connect to)
 }
 
 // DiscoverNginxUIContainersWithRetry discovers containers with retry logic for timing issues.
@@ -447,6 +448,7 @@ func DiscoverNginxUIContainers(ctx context.Context, sshPool *ssh.Pool, primaryMa
 			NodeHostname:      nodeHostname,
 			ContainerHostname: containerHostname,
 			ContainerID:       containerID,
+			SSHHost:           sshHost,
 		})
 
 		log.Infow("discovered NginxUI container",
@@ -658,8 +660,7 @@ func UpdateNginxUINodeTokens(ctx context.Context, sshPool *ssh.Pool, primaryMast
 // ResetNginxUIAdminPassword resets the admin password using nginx-ui's built-in reset-password command.
 // This generates a new random password and returns the credentials.
 // The password is logged for operator reference.
-// primaryMaster is the SSH host (IP address) to run commands on.
-func ResetNginxUIAdminPassword(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, containers []NginxUIContainerInfo) (*NginxUICredentials, error) {
+func ResetNginxUIAdminPassword(ctx context.Context, sshPool *ssh.Pool, containers []NginxUIContainerInfo) (*NginxUICredentials, error) {
 	log := logging.L().With("component", "nginxui")
 
 	if len(containers) == 0 {
@@ -681,14 +682,15 @@ func ResetNginxUIAdminPassword(ctx context.Context, sshPool *ssh.Pool, primaryMa
 
 	log.Infow("resetting NginxUI admin password",
 		"hubNode", hubContainer.NodeHostname,
+		"sshHost", hubContainer.SSHHost,
 		"containerID", hubContainer.ContainerID,
 	)
 
 	// Use nginx-ui's built-in reset-password command
 	// This generates a new random password and outputs: "User: admin, Password: <password>"
-	// Use primaryMaster for SSH - docker exec works from any swarm manager
+	// docker exec must run on the node where the container is running - use container's SSHHost
 	resetCmd := fmt.Sprintf("docker exec %s nginx-ui reset-password --config=/etc/nginx-ui/app.ini", hubContainer.ContainerID)
-	stdout, stderr, err := sshPool.Run(ctx, primaryMaster, resetCmd)
+	stdout, stderr, err := sshPool.Run(ctx, hubContainer.SSHHost, resetCmd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to reset password: %w (stderr: %s)", err, stderr)
 	}
@@ -1005,11 +1007,11 @@ server {
 		log.Infow("S3 proxy config written", "node", container.NodeHostname, "config", s3ConfigPath)
 	}
 
-	// Reload nginx in all containers - use primaryMaster for SSH (docker exec works from any swarm manager)
+	// Reload nginx in all containers - docker exec must run on the node where the container is running
 	for _, container := range containers {
 		reloadCmd := fmt.Sprintf("docker exec %s nginx -s reload 2>/dev/null || true", container.ContainerID)
-		if _, _, err := sshPool.Run(ctx, primaryMaster, reloadCmd); err != nil {
-			log.Warnw("failed to reload nginx", "node", container.NodeHostname, "error", err)
+		if _, _, err := sshPool.Run(ctx, container.SSHHost, reloadCmd); err != nil {
+			log.Warnw("failed to reload nginx", "node", container.NodeHostname, "sshHost", container.SSHHost, "error", err)
 		}
 	}
 
