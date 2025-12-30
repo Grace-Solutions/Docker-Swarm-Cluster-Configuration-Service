@@ -327,6 +327,7 @@ func GetNginxUIService(services []ServiceMetadata) *ServiceMetadata {
 // NginxUIContainerInfo represents a discovered NginxUI container
 type NginxUIContainerInfo struct {
 	NodeHostname      string // Docker Swarm node hostname (e.g., DOCKER-SWARM-NODE-0000)
+	SSHHost           string // SSH address for the node (IP address, e.g., 172.16.32.95)
 	ContainerHostname string // Container's internal hostname (from docker inspect .Config.Hostname)
 	ContainerID       string // Container ID
 }
@@ -445,6 +446,7 @@ func DiscoverNginxUIContainers(ctx context.Context, sshPool *ssh.Pool, primaryMa
 
 		containers = append(containers, NginxUIContainerInfo{
 			NodeHostname:      nodeHostname,
+			SSHHost:           sshHost,
 			ContainerHostname: containerHostname,
 			ContainerID:       containerID,
 		})
@@ -513,9 +515,9 @@ func UpdateNginxUIClusterConfig(ctx context.Context, sshPool *ssh.Pool, storageP
 		"otherNodes", len(otherContainers),
 	)
 
-	// Read existing app.ini
+	// Read existing app.ini - use SSHHost (IP) not NodeHostname
 	readCmd := fmt.Sprintf("cat '%s' 2>/dev/null || echo ''", appIniPath)
-	existingContent, _, err := sshPool.Run(ctx, hubContainer.NodeHostname, readCmd)
+	existingContent, _, err := sshPool.Run(ctx, hubContainer.SSHHost, readCmd)
 	if err != nil {
 		return fmt.Errorf("failed to read existing app.ini: %w", err)
 	}
@@ -526,14 +528,15 @@ func UpdateNginxUIClusterConfig(ctx context.Context, sshPool *ssh.Pool, storageP
 	// Append new cluster config
 	newContent = strings.TrimRight(newContent, "\n") + "\n\n" + clusterConfig + "\n"
 
-	// Write back
+	// Write back - use SSHHost (IP) not NodeHostname
 	writeCmd := fmt.Sprintf("cat > '%s' << 'EOFCLUSTER'\n%s\nEOFCLUSTER", appIniPath, newContent)
-	if _, stderr, err := sshPool.Run(ctx, hubContainer.NodeHostname, writeCmd); err != nil {
+	if _, stderr, err := sshPool.Run(ctx, hubContainer.SSHHost, writeCmd); err != nil {
 		return fmt.Errorf("failed to write app.ini: %w (stderr: %s)", err, stderr)
 	}
 
 	log.Infow("✅ NginxUI cluster config updated",
 		"hubNode", hubContainer.NodeHostname,
+		"sshHost", hubContainer.SSHHost,
 		"clusterNodes", len(otherContainers),
 	)
 
@@ -550,7 +553,7 @@ func UpdateNginxUIClusterConfig(ctx context.Context, sshPool *ssh.Pool, storageP
 		"serviceName", serviceName,
 	)
 	updateCmd := fmt.Sprintf("docker service update --force %s", serviceName)
-	if _, stderr, err := sshPool.Run(ctx, hubContainer.NodeHostname, updateCmd); err != nil {
+	if _, stderr, err := sshPool.Run(ctx, hubContainer.SSHHost, updateCmd); err != nil {
 		log.Warnw("failed to force service update", "error", err, "stderr", stderr)
 		// Don't fail - config is written, service can be manually updated
 	} else {
@@ -632,13 +635,13 @@ func UpdateNginxUINodeTokens(ctx context.Context, sshPool *ssh.Pool, storagePath
 	// Update all tokens in the nodes table to match the configured node_secret
 	// This fixes the mismatch between what's in the database and what the containers expect
 	updateCmd := fmt.Sprintf(`sqlite3 '%s' "UPDATE nodes SET token='%s';"`, dbPath, nodeSecret)
-	if _, stderr, err := sshPool.Run(ctx, hubContainer.NodeHostname, updateCmd); err != nil {
+	if _, stderr, err := sshPool.Run(ctx, hubContainer.SSHHost, updateCmd); err != nil {
 		return fmt.Errorf("failed to update node tokens: %w (stderr: %s)", err, stderr)
 	}
 
 	// Verify the update
 	verifyCmd := fmt.Sprintf(`sqlite3 '%s' "SELECT id, name, token FROM nodes;"`, dbPath)
-	stdout, _, err := sshPool.Run(ctx, hubContainer.NodeHostname, verifyCmd)
+	stdout, _, err := sshPool.Run(ctx, hubContainer.SSHHost, verifyCmd)
 	if err != nil {
 		log.Warnw("failed to verify token update", "error", err)
 	} else {
@@ -684,7 +687,7 @@ func ResetNginxUIAdminPassword(ctx context.Context, sshPool *ssh.Pool, container
 	// Use nginx-ui's built-in reset-password command
 	// This generates a new random password and outputs: "User: admin, Password: <password>"
 	resetCmd := fmt.Sprintf("docker exec %s nginx-ui reset-password --config=/etc/nginx-ui/app.ini", hubContainer.ContainerID)
-	stdout, stderr, err := sshPool.Run(ctx, hubContainer.NodeHostname, resetCmd)
+	stdout, stderr, err := sshPool.Run(ctx, hubContainer.SSHHost, resetCmd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to reset password: %w (stderr: %s)", err, stderr)
 	}
@@ -855,11 +858,16 @@ func WriteNginxUICredentials(ctx context.Context, sshPool *ssh.Pool, hubNode str
 		"nodes", len(containers),
 	)
 
-	// Log credentials prominently for operator reference
+	// Log credentials prominently for operator reference (only if creds are available)
 	log.Infow("========================================")
 	log.Infow("=== NginxUI Admin Credentials ===")
-	log.Infow(fmt.Sprintf("Username: %s", creds.Username))
-	log.Infow(fmt.Sprintf("Password: %s", creds.Password))
+	if creds != nil {
+		log.Infow(fmt.Sprintf("Username: %s", creds.Username))
+		log.Infow(fmt.Sprintf("Password: %s", creds.Password))
+	} else {
+		log.Infow("Password reset failed - credentials not available")
+		log.Infow("You may need to manually reset the password")
+	}
 	log.Infow(fmt.Sprintf("Credentials file: %s", credsPath))
 	log.Infow("========================================")
 
@@ -897,10 +905,10 @@ func ConfigureS3Proxy(ctx context.Context, sshPool *ssh.Pool, storagePath, s3Cre
 
 	hubContainer := sortedContainers[0]
 
-	// Read S3 credentials file from shared storage
-	log.Infow("reading S3 credentials file", "path", s3CredentialsFile, "node", hubContainer.NodeHostname)
+	// Read S3 credentials file from shared storage - use SSHHost (IP) not NodeHostname
+	log.Infow("reading S3 credentials file", "path", s3CredentialsFile, "node", hubContainer.NodeHostname, "sshHost", hubContainer.SSHHost)
 	catCmd := fmt.Sprintf("cat '%s' 2>/dev/null", s3CredentialsFile)
-	stdout, _, err := sshPool.Run(ctx, hubContainer.NodeHostname, catCmd)
+	stdout, _, err := sshPool.Run(ctx, hubContainer.SSHHost, catCmd)
 	if err != nil || strings.TrimSpace(stdout) == "" {
 		log.Infow("S3 credentials file not found or empty, skipping S3 proxy setup", "path", s3CredentialsFile)
 		return nil
@@ -981,27 +989,27 @@ server {
 		s3ConfigPath := filepath.ToSlash(filepath.Join(nginxPath, "sites-available", "s3-gateway.conf"))
 		s3SymlinkPath := filepath.ToSlash(filepath.Join(nginxPath, "sites-enabled", "s3-gateway.conf"))
 
-		// Write site config
+		// Write site config - use SSHHost (IP) not NodeHostname
 		writeCmd := fmt.Sprintf("cat > '%s' << 'EOF'\n%sEOF", s3ConfigPath, s3SiteConfig)
-		if _, stderr, err := sshPool.Run(ctx, container.NodeHostname, writeCmd); err != nil {
-			log.Warnw("failed to write S3 site config", "node", container.NodeHostname, "error", err, "stderr", stderr)
+		if _, stderr, err := sshPool.Run(ctx, container.SSHHost, writeCmd); err != nil {
+			log.Warnw("failed to write S3 site config", "node", container.NodeHostname, "sshHost", container.SSHHost, "error", err, "stderr", stderr)
 			continue
 		}
 
-		// Create symlink if not exists
+		// Create symlink if not exists - use SSHHost (IP) not NodeHostname
 		symlinkCmd := fmt.Sprintf("ln -sf '../sites-available/s3-gateway.conf' '%s' 2>/dev/null || true", s3SymlinkPath)
-		if _, _, err := sshPool.Run(ctx, container.NodeHostname, symlinkCmd); err != nil {
-			log.Warnw("failed to create S3 site symlink", "node", container.NodeHostname, "error", err)
+		if _, _, err := sshPool.Run(ctx, container.SSHHost, symlinkCmd); err != nil {
+			log.Warnw("failed to create S3 site symlink", "node", container.NodeHostname, "sshHost", container.SSHHost, "error", err)
 		}
 
-		log.Infow("S3 proxy config written", "node", container.NodeHostname, "config", s3ConfigPath)
+		log.Infow("S3 proxy config written", "node", container.NodeHostname, "sshHost", container.SSHHost, "config", s3ConfigPath)
 	}
 
-	// Reload nginx in all containers
+	// Reload nginx in all containers - use SSHHost (IP) not NodeHostname
 	for _, container := range containers {
 		reloadCmd := fmt.Sprintf("docker exec %s nginx -s reload 2>/dev/null || true", container.ContainerID)
-		if _, _, err := sshPool.Run(ctx, container.NodeHostname, reloadCmd); err != nil {
-			log.Warnw("failed to reload nginx", "node", container.NodeHostname, "error", err)
+		if _, _, err := sshPool.Run(ctx, container.SSHHost, reloadCmd); err != nil {
+			log.Warnw("failed to reload nginx", "node", container.NodeHostname, "sshHost", container.SSHHost, "error", err)
 		}
 	}
 
