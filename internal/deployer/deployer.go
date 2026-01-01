@@ -811,94 +811,131 @@ fi
 func configureDockerAPI(ctx context.Context, sshPool *ssh.Pool, host string) {
 	log := logging.L().With("node", host, "component", "docker-api")
 
+	// Configuration with timeout and retry settings
+	const (
+		maxRetries     = 3
+		maxWaitSeconds = 60
+		retryDelaySecs = 5
+	)
+
 	// Create daemon.json with TCP listener if it doesn't already have it
-	daemonConfigScript := `#!/bin/bash
+	daemonConfigScript := fmt.Sprintf(`#!/bin/bash
 set -e
 
 DAEMON_JSON="/etc/docker/daemon.json"
 OVERRIDE_CONF="/etc/systemd/system/docker.service.d/override.conf"
-NEEDS_RESTART=false
+MAX_WAIT=%d
+MAX_RETRIES=%d
+RETRY_DELAY=%d
 
-# Create directory if needed
-mkdir -p /etc/docker
+configure_docker() {
+    local NEEDS_RESTART=false
 
-# Check if daemon.json exists and already has hosts configured
-if [ -f "$DAEMON_JSON" ]; then
-    if grep -q '"hosts"' "$DAEMON_JSON" 2>/dev/null; then
-        echo "Docker API already configured in daemon.json"
+    # Create directory if needed
+    mkdir -p /etc/docker
+
+    # Check if daemon.json exists and already has hosts configured
+    if [ -f "$DAEMON_JSON" ]; then
+        if grep -q '"hosts"' "$DAEMON_JSON" 2>/dev/null; then
+            echo "Docker API already configured in daemon.json"
+        else
+            NEEDS_RESTART=true
+        fi
     else
         NEEDS_RESTART=true
     fi
-else
-    NEEDS_RESTART=true
-fi
 
-# Configure daemon.json if needed
-if [ "$NEEDS_RESTART" = "true" ]; then
-    # Create or update daemon.json with TCP listener
-    if [ -f "$DAEMON_JSON" ] && [ -s "$DAEMON_JSON" ]; then
-        CONTENT=$(cat "$DAEMON_JSON" | tr -d '[:space:]')
-        if [ "$CONTENT" = "{}" ] || [ "$CONTENT" = "" ]; then
+    # Configure daemon.json if needed
+    if [ "$NEEDS_RESTART" = "true" ]; then
+        if [ -f "$DAEMON_JSON" ] && [ -s "$DAEMON_JSON" ]; then
+            CONTENT=$(cat "$DAEMON_JSON" | tr -d '[:space:]')
+            if [ "$CONTENT" = "{}" ] || [ "$CONTENT" = "" ]; then
+                cat > "$DAEMON_JSON" << 'EOF'
+{
+    "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"]
+}
+EOF
+            else
+                echo "daemon.json has existing config, skipping API configuration to avoid conflicts"
+                NEEDS_RESTART=false
+            fi
+        else
             cat > "$DAEMON_JSON" << 'EOF'
 {
     "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"]
 }
 EOF
-        else
-            echo "daemon.json has existing config, skipping API configuration to avoid conflicts"
-            NEEDS_RESTART=false
         fi
-    else
-        cat > "$DAEMON_JSON" << 'EOF'
-{
-    "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"]
-}
-EOF
     fi
-fi
 
-# Ensure systemd override exists (always check this)
-if [ ! -f "$OVERRIDE_CONF" ]; then
-    mkdir -p /etc/systemd/system/docker.service.d
-    cat > "$OVERRIDE_CONF" << 'EOF'
+    # Ensure systemd override exists (always check this)
+    if [ ! -f "$OVERRIDE_CONF" ]; then
+        mkdir -p /etc/systemd/system/docker.service.d
+        cat > "$OVERRIDE_CONF" << 'EOF'
 [Service]
 ExecStart=
 ExecStart=/usr/bin/dockerd
 EOF
-    NEEDS_RESTART=true
-fi
-
-# Reload systemd and restart Docker if configuration changed
-if [ "$NEEDS_RESTART" = "true" ]; then
-    echo "Configuration changed, restarting Docker..."
-    systemctl daemon-reload
-    systemctl restart docker
-    echo "Docker restarted"
-fi
-
-# Always verify Docker is running and API is accessible
-# Wait up to 30 seconds for Docker to be ready
-echo "Waiting for Docker to be ready..."
-for i in $(seq 1 30); do
-    if docker info >/dev/null 2>&1; then
-        echo "Docker is ready"
-        break
+        NEEDS_RESTART=true
     fi
-    if [ $i -eq 30 ]; then
-        echo "WARNING: Docker may not be fully ready after 30 seconds"
+
+    # Reload systemd and restart Docker if configuration changed
+    if [ "$NEEDS_RESTART" = "true" ]; then
+        echo "Configuration changed, restarting Docker..."
+        systemctl daemon-reload
+        systemctl restart docker
+        echo "Docker restarted"
     fi
-    sleep 1
+}
+
+wait_for_docker() {
+    echo "Waiting up to ${MAX_WAIT}s for Docker to be ready..."
+    for i in $(seq 1 $MAX_WAIT); do
+        if docker info >/dev/null 2>&1; then
+            echo "Docker is ready after ${i}s"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Docker not ready after ${MAX_WAIT}s"
+    return 1
+}
+
+wait_for_api() {
+    echo "Waiting up to ${MAX_WAIT}s for Docker API on port 2375..."
+    for i in $(seq 1 $MAX_WAIT); do
+        if netstat -tlnp 2>/dev/null | grep -q ':2375' || ss -tlnp 2>/dev/null | grep -q ':2375'; then
+            echo "Docker API listening on tcp://0.0.0.0:2375 after ${i}s"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Docker API port 2375 not listening after ${MAX_WAIT}s"
+    return 1
+}
+
+# Main execution with retries
+for attempt in $(seq 1 $MAX_RETRIES); do
+    echo "=== Attempt ${attempt}/${MAX_RETRIES} ==="
+
+    configure_docker
+
+    if wait_for_docker && wait_for_api; then
+        echo "SUCCESS: Docker API configured and ready"
+        exit 0
+    fi
+
+    if [ $attempt -lt $MAX_RETRIES ]; then
+        echo "Retrying in ${RETRY_DELAY}s..."
+        # Force restart Docker before retry
+        systemctl restart docker || true
+        sleep $RETRY_DELAY
+    fi
 done
 
-# Verify TCP API is listening
-if netstat -tlnp 2>/dev/null | grep -q ':2375'; then
-    echo "Docker API configured and listening on tcp://0.0.0.0:2375"
-elif ss -tlnp 2>/dev/null | grep -q ':2375'; then
-    echo "Docker API configured and listening on tcp://0.0.0.0:2375"
-else
-    echo "WARNING: Docker API port 2375 may not be listening yet"
-fi
-`
+echo "FAILED: Could not verify Docker API after ${MAX_RETRIES} attempts"
+exit 1
+`, maxWaitSeconds, maxRetries, retryDelaySecs)
 
 	if _, stderr, err := sshPool.Run(ctx, host, daemonConfigScript); err != nil {
 		log.Warnw("failed to configure Docker API (non-fatal)", "error", err, "stderr", stderr)
