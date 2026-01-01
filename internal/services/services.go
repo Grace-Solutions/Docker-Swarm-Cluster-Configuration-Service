@@ -250,17 +250,17 @@ func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string
 		}
 	}
 
-	// Prepare Nginx if enabled (stateless reverse proxy)
+	// Prepare EdgeLoadBalancer (Nginx) if enabled (stateless reverse proxy)
 	var nginxConfig *NginxConfig
-	if IsNginxEnabled(services) {
-		log.Infow("Nginx service detected, preparing deployment")
-		nginxConfig, err = PrepareNginxDeployment(ctx, sshPool, primaryMaster, storageMountPath)
+	if IsEdgeLoadBalancerEnabled(services) {
+		log.Infow("EdgeLoadBalancer service detected, preparing deployment")
+		nginxConfig, err = PrepareEdgeLoadBalancerDeployment(ctx, sshPool, primaryMaster, storageMountPath)
 		if err != nil {
-			log.Warnw("failed to prepare Nginx deployment", "error", err)
+			log.Warnw("failed to prepare EdgeLoadBalancer deployment", "error", err)
 			// Continue anyway - Nginx may work with defaults
 		}
 	} else {
-		log.Infow("Nginx service not enabled, skipping Nginx preparation")
+		log.Infow("EdgeLoadBalancer service not enabled, skipping preparation")
 	}
 
 	// Run pre-initialization script on ALL nodes (each creates its own directories on shared storage)

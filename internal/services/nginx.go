@@ -19,64 +19,64 @@ type NginxConfig struct {
 }
 
 const (
-	// NginxServiceNamePattern matches Nginx service names
-	NginxServiceNamePattern = `(?i)^nginx$`
-	// NginxLabelKey is the Docker node label for edge load balancer nodes
-	NginxLabelKey = "EdgeLoadBalancer"
-	// NginxLabelValue is the expected value for the load balancer label
-	NginxLabelValue = "true"
-	// NginxDataDir is the subdirectory for Nginx data
-	NginxDataDir = "Nginx"
-	// NginxConfDir is the subdirectory for Nginx configuration
-	NginxConfDir = "conf"
+	// EdgeLoadBalancerServiceNamePattern matches EdgeLoadBalancer service names
+	EdgeLoadBalancerServiceNamePattern = `(?i)^edgeloadbalancer$`
+	// EdgeLoadBalancerLabelKey is the Docker node label for edge load balancer nodes
+	EdgeLoadBalancerLabelKey = "EdgeLoadBalancer"
+	// EdgeLoadBalancerLabelValue is the expected value for the load balancer label
+	EdgeLoadBalancerLabelValue = "true"
+	// EdgeLoadBalancerDataDir is the subdirectory for Nginx/EdgeLoadBalancer data
+	EdgeLoadBalancerDataDir = "EdgeLoadBalancer"
+	// EdgeLoadBalancerConfDir is the subdirectory for Nginx configuration
+	EdgeLoadBalancerConfDir = "conf"
 )
 
-// IsNginxService checks if a service matches the Nginx pattern (not NginxUI)
-func IsNginxService(serviceName string) bool {
-	pattern := regexp.MustCompile(NginxServiceNamePattern)
+// IsEdgeLoadBalancerService checks if a service is the EdgeLoadBalancer (Nginx)
+func IsEdgeLoadBalancerService(serviceName string) bool {
+	pattern := regexp.MustCompile(EdgeLoadBalancerServiceNamePattern)
 	return pattern.MatchString(serviceName)
 }
 
-// IsNginxEnabled checks if Nginx service is enabled in the discovered services
-func IsNginxEnabled(services []ServiceMetadata) bool {
+// IsEdgeLoadBalancerEnabled checks if EdgeLoadBalancer service is enabled in the discovered services
+func IsEdgeLoadBalancerEnabled(services []ServiceMetadata) bool {
 	for _, svc := range services {
-		if svc.Enabled && IsNginxService(svc.Name) {
+		if svc.Enabled && IsEdgeLoadBalancerService(svc.Name) {
 			return true
 		}
 	}
 	return false
 }
 
-// GetNginxService returns the Nginx service metadata if found and enabled
-func GetNginxService(services []ServiceMetadata) *ServiceMetadata {
+// GetEdgeLoadBalancerService returns the EdgeLoadBalancer service metadata if found and enabled
+func GetEdgeLoadBalancerService(services []ServiceMetadata) *ServiceMetadata {
 	for i := range services {
-		if services[i].Enabled && IsNginxService(services[i].Name) {
+		if services[i].Enabled && IsEdgeLoadBalancerService(services[i].Name) {
 			return &services[i]
 		}
 	}
 	return nil
 }
 
-// PrepareNginxDeployment prepares Nginx for deployment by creating config directories and base config
-func PrepareNginxDeployment(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, storagePath string) (*NginxConfig, error) {
-	log := logging.L().With("component", "nginx")
+// PrepareEdgeLoadBalancerDeployment prepares EdgeLoadBalancer (Nginx) for deployment by creating config directories and base config
+func PrepareEdgeLoadBalancerDeployment(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, storagePath string) (*NginxConfig, error) {
+	log := logging.L().With("component", "edgeloadbalancer")
 
-	log.Infow("preparing Nginx deployment")
+	log.Infow("preparing EdgeLoadBalancer deployment")
 
 	config := &NginxConfig{
 		Enabled:     true,
 		StoragePath: storagePath,
-		ServiceName: "Nginx_EdgeLoadBalancer",
+		ServiceName: "EdgeLoadBalancer_EdgeLoadBalancer",
 	}
 
 	// Create directory structure on shared storage
-	confPath := filepath.ToSlash(filepath.Join(storagePath, "data", NginxDataDir, NginxConfDir))
+	confPath := filepath.ToSlash(filepath.Join(storagePath, "data", EdgeLoadBalancerDataDir, EdgeLoadBalancerConfDir))
 	dirs := []string{
 		confPath,
 		filepath.ToSlash(filepath.Join(confPath, "conf.d")),
 		filepath.ToSlash(filepath.Join(confPath, "sites-enabled")),
 		filepath.ToSlash(filepath.Join(confPath, "stream.d")), // TCP/UDP stream configs
-		filepath.ToSlash(filepath.Join(storagePath, "data", NginxDataDir, "ssl")),
+		filepath.ToSlash(filepath.Join(storagePath, "data", EdgeLoadBalancerDataDir, "ssl")),
 	}
 
 	for _, dir := range dirs {
@@ -230,7 +230,7 @@ type ProxyRule struct {
 func AddProxyRule(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, storagePath string, rule ProxyRule) error {
 	log := logging.L().With("component", "nginx", "rule", rule.Name)
 
-	confPath := filepath.ToSlash(filepath.Join(storagePath, "data", NginxDataDir, NginxConfDir, "conf.d"))
+	confPath := filepath.ToSlash(filepath.Join(storagePath, "data", EdgeLoadBalancerDataDir, EdgeLoadBalancerConfDir, "conf.d"))
 	ruleFile := filepath.ToSlash(filepath.Join(confPath, fmt.Sprintf("proxy-%s.conf", strings.ToLower(rule.Name))))
 
 	// Build the proxy configuration
@@ -305,7 +305,7 @@ func GenerateProxyRulesForServices(ctx context.Context, sshPool *ssh.Pool, prima
 	var proxyServices []ServiceMetadata
 	for _, svc := range services {
 		// Skip disabled services, Nginx itself, and PortainerAgent
-		if !svc.Enabled || IsNginxService(svc.Name) || svc.Name == "PortainerAgent" {
+		if !svc.Enabled || IsEdgeLoadBalancerService(svc.Name) || svc.Name == "PortainerAgent" {
 			continue
 		}
 		// Only include services with NGINX_PROXY: true
@@ -323,7 +323,7 @@ func GenerateProxyRulesForServices(ctx context.Context, sshPool *ssh.Pool, prima
 
 	// Write to default.conf - this is the single server block with health check + proxy rules
 	// This replaces the placeholder created by createDefaultServerConfig
-	confPath := filepath.ToSlash(filepath.Join(storagePath, "data", NginxDataDir, NginxConfDir, "conf.d"))
+	confPath := filepath.ToSlash(filepath.Join(storagePath, "data", EdgeLoadBalancerDataDir, EdgeLoadBalancerConfDir, "conf.d"))
 	defaultConfigPath := filepath.ToSlash(filepath.Join(confPath, "default.conf"))
 
 	var config strings.Builder
@@ -437,7 +437,7 @@ func generateTCPStreamConfigs(ctx context.Context, sshPool *ssh.Pool, primaryMas
 		return nil
 	}
 
-	streamPath := filepath.ToSlash(filepath.Join(storagePath, "data", NginxDataDir, NginxConfDir, "stream.d"))
+	streamPath := filepath.ToSlash(filepath.Join(storagePath, "data", EdgeLoadBalancerDataDir, EdgeLoadBalancerConfDir, "stream.d"))
 	streamConfigPath := filepath.ToSlash(filepath.Join(streamPath, "services-stream.conf"))
 
 	var streamConfig strings.Builder
