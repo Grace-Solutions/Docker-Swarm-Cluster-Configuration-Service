@@ -816,6 +816,8 @@ func configureDockerAPI(ctx context.Context, sshPool *ssh.Pool, host string) {
 set -e
 
 DAEMON_JSON="/etc/docker/daemon.json"
+OVERRIDE_CONF="/etc/systemd/system/docker.service.d/override.conf"
+NEEDS_RESTART=false
 
 # Create directory if needed
 mkdir -p /etc/docker
@@ -824,50 +826,78 @@ mkdir -p /etc/docker
 if [ -f "$DAEMON_JSON" ]; then
     if grep -q '"hosts"' "$DAEMON_JSON" 2>/dev/null; then
         echo "Docker API already configured in daemon.json"
-        exit 0
+    else
+        NEEDS_RESTART=true
     fi
+else
+    NEEDS_RESTART=true
 fi
 
-# Create or update daemon.json with TCP listener
-# We need to merge with existing config if present
-if [ -f "$DAEMON_JSON" ] && [ -s "$DAEMON_JSON" ]; then
-    # File exists and is not empty - we need to be careful
-    # For simplicity, check if it's just {} or minimal
-    CONTENT=$(cat "$DAEMON_JSON" | tr -d '[:space:]')
-    if [ "$CONTENT" = "{}" ] || [ "$CONTENT" = "" ]; then
-        # Empty or minimal, safe to overwrite
+# Configure daemon.json if needed
+if [ "$NEEDS_RESTART" = "true" ]; then
+    # Create or update daemon.json with TCP listener
+    if [ -f "$DAEMON_JSON" ] && [ -s "$DAEMON_JSON" ]; then
+        CONTENT=$(cat "$DAEMON_JSON" | tr -d '[:space:]')
+        if [ "$CONTENT" = "{}" ] || [ "$CONTENT" = "" ]; then
+            cat > "$DAEMON_JSON" << 'EOF'
+{
+    "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"]
+}
+EOF
+        else
+            echo "daemon.json has existing config, skipping API configuration to avoid conflicts"
+            NEEDS_RESTART=false
+        fi
+    else
         cat > "$DAEMON_JSON" << 'EOF'
 {
     "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"]
 }
 EOF
-    else
-        echo "daemon.json has existing config, skipping API configuration to avoid conflicts"
-        exit 0
     fi
-else
-    # Create new daemon.json
-    cat > "$DAEMON_JSON" << 'EOF'
-{
-    "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"]
-}
-EOF
 fi
 
-# Docker systemd service needs to NOT pass -H flag when daemon.json has hosts
-# Create override to remove -H from ExecStart
-mkdir -p /etc/systemd/system/docker.service.d
-cat > /etc/systemd/system/docker.service.d/override.conf << 'EOF'
+# Ensure systemd override exists (always check this)
+if [ ! -f "$OVERRIDE_CONF" ]; then
+    mkdir -p /etc/systemd/system/docker.service.d
+    cat > "$OVERRIDE_CONF" << 'EOF'
 [Service]
 ExecStart=
 ExecStart=/usr/bin/dockerd
 EOF
+    NEEDS_RESTART=true
+fi
 
-# Reload and restart Docker
-systemctl daemon-reload
-systemctl restart docker
+# Reload systemd and restart Docker if configuration changed
+if [ "$NEEDS_RESTART" = "true" ]; then
+    echo "Configuration changed, restarting Docker..."
+    systemctl daemon-reload
+    systemctl restart docker
+    echo "Docker restarted"
+fi
 
-echo "Docker API configured on tcp://0.0.0.0:2375"
+# Always verify Docker is running and API is accessible
+# Wait up to 30 seconds for Docker to be ready
+echo "Waiting for Docker to be ready..."
+for i in $(seq 1 30); do
+    if docker info >/dev/null 2>&1; then
+        echo "Docker is ready"
+        break
+    fi
+    if [ $i -eq 30 ]; then
+        echo "WARNING: Docker may not be fully ready after 30 seconds"
+    fi
+    sleep 1
+done
+
+# Verify TCP API is listening
+if netstat -tlnp 2>/dev/null | grep -q ':2375'; then
+    echo "Docker API configured and listening on tcp://0.0.0.0:2375"
+elif ss -tlnp 2>/dev/null | grep -q ':2375'; then
+    echo "Docker API configured and listening on tcp://0.0.0.0:2375"
+else
+    echo "WARNING: Docker API port 2375 may not be listening yet"
+fi
 `
 
 	if _, stderr, err := sshPool.Run(ctx, host, daemonConfigScript); err != nil {
