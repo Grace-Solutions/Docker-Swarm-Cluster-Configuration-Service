@@ -399,24 +399,33 @@ func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string,
 	}
 
 	// Parse bind mounts from the processed content and create directories
-	// If distributed storage is enabled, only create on one node (shared storage)
-	// If distributed storage is disabled, create on all nodes (local storage)
+	// Storage paths: create on one node if distributed storage, else all nodes
+	// Local paths: always create on all nodes (node-local directories like /var/lib/nginx)
 	if len(clusterInfo.AllNodes) > 0 {
-		bindMountPaths := parseBindMounts(processedContent, storageMountPath)
-		if len(bindMountPaths) > 0 {
-			var targetNodes []string
+		bindMounts := parseBindMounts(processedContent, storageMountPath)
+
+		// Handle storage paths (under storageMountPath)
+		if len(bindMounts.StoragePaths) > 0 {
+			var storageNodes []string
 			if clusterInfo.DistributedStorageEnabled {
 				// Shared storage - only need to create on one node
-				targetNodes = []string{clusterInfo.AllNodes[0]}
-				log.Infow("using distributed storage, creating directories on single node")
+				storageNodes = []string{clusterInfo.AllNodes[0]}
+				log.Infow("creating storage directories on single node (distributed storage)", "paths", bindMounts.StoragePaths)
 			} else {
 				// Local storage - create on all nodes
-				targetNodes = clusterInfo.AllNodes
-				log.Infow("using local storage, creating directories on all nodes")
+				storageNodes = clusterInfo.AllNodes
+				log.Infow("creating storage directories on all nodes (local storage)", "paths", bindMounts.StoragePaths)
 			}
-			if err := ensureDirectoriesOnNodes(ctx, sshPool, targetNodes, bindMountPaths, svc.Name); err != nil {
-				log.Warnw("failed to create some bind mount directories", "error", err)
-				// Continue anyway - directories might already exist or be created by other means
+			if err := ensureDirectoriesOnNodes(ctx, sshPool, storageNodes, bindMounts.StoragePaths, svc.Name); err != nil {
+				log.Warnw("failed to create some storage directories", "error", err)
+			}
+		}
+
+		// Handle local paths (not under storageMountPath) - always create on ALL nodes
+		if len(bindMounts.LocalPaths) > 0 {
+			log.Infow("creating local directories on all nodes", "paths", bindMounts.LocalPaths)
+			if err := ensureDirectoriesOnNodes(ctx, sshPool, clusterInfo.AllNodes, bindMounts.LocalPaths, svc.Name); err != nil {
+				log.Warnw("failed to create some local directories", "error", err)
 			}
 		}
 	}
@@ -500,15 +509,19 @@ func replaceStoragePaths(content string, storageMountPath string) string {
 	return re.ReplaceAllString(content, storageMountPath)
 }
 
+// BindMountPaths contains categorized bind mount paths from service definitions.
+type BindMountPaths struct {
+	// StoragePaths are paths under the storage mount path (shared/distributed storage)
+	StoragePaths []string
+	// LocalPaths are absolute paths not under storage mount (node-local directories)
+	LocalPaths []string
+}
+
 // parseBindMounts extracts host paths from bind mount volume definitions in YAML content.
 // It parses both short form ("host:container") and long form (source:/path, target:/path) volumes.
-// Only returns paths that start with the storage mount path prefix.
-func parseBindMounts(content string, storageMountPath string) []string {
-	if storageMountPath == "" {
-		return nil
-	}
-
-	var paths []string
+// Returns categorized paths: storage paths (under storageMountPath) and local paths (absolute paths elsewhere).
+func parseBindMounts(content string, storageMountPath string) BindMountPaths {
+	var result BindMountPaths
 	seenPaths := make(map[string]bool)
 
 	// Pattern for short form volumes: - /host/path:/container/path or - /host/path:/container/path:ro
@@ -529,18 +542,27 @@ func parseBindMounts(content string, storageMountPath string) []string {
 			hostPath = matches[1]
 		}
 
-		// Only include paths under the storage mount path
-		if hostPath != "" && strings.HasPrefix(hostPath, storageMountPath) {
-			// Normalize path and avoid duplicates
-			hostPath = strings.TrimSuffix(hostPath, "/")
-			if !seenPaths[hostPath] {
-				seenPaths[hostPath] = true
-				paths = append(paths, hostPath)
-			}
+		// Skip empty, relative paths, or named volumes
+		if hostPath == "" || !strings.HasPrefix(hostPath, "/") {
+			continue
+		}
+
+		// Normalize path and avoid duplicates
+		hostPath = strings.TrimSuffix(hostPath, "/")
+		if seenPaths[hostPath] {
+			continue
+		}
+		seenPaths[hostPath] = true
+
+		// Categorize: storage path vs local path
+		if storageMountPath != "" && strings.HasPrefix(hostPath, storageMountPath) {
+			result.StoragePaths = append(result.StoragePaths, hostPath)
+		} else {
+			result.LocalPaths = append(result.LocalPaths, hostPath)
 		}
 	}
 
-	return paths
+	return result
 }
 
 // ensureDirectoriesOnNodes creates directories on all nodes if they don't exist.

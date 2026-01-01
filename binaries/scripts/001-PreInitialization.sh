@@ -36,12 +36,18 @@ init_nginx_dirs() {
 
     echo "[PreInit] Creating Nginx directories..."
 
-    # Create all required directories
+    # Create shared storage directories (on distributed storage)
     mkdir -p "${conf_path}/conf.d"
     mkdir -p "${conf_path}/sites-enabled"
     mkdir -p "${conf_path}/stream.d"
     mkdir -p "${nginx_base}/ssl"
     mkdir -p "${nginx_base}/acme-challenge"
+
+    # Create local ephemeral directories (on each node's local filesystem)
+    # These are bind-mounted to the container for cache, temp, and logs
+    mkdir -p /var/lib/nginx/cache
+    mkdir -p /var/lib/nginx/tmp
+    mkdir -p /var/log/nginx
 
     # Download mime.types if not exists
     local mime_path="${conf_path}/mime.types"

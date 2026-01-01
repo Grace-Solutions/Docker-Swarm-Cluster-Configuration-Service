@@ -7,9 +7,9 @@
 # REQUIRES: docker node update --label-add loadbalancer=true <NODE>
 
 services:
-  Nginx:
+  EdgeLoadBalancer:
     image: nginx:alpine
-    hostname: 'nginx-{{.Node.ID}}'
+    hostname: 'EdgeLoadBalancer-{{.Node.ID}}'
     ports:
       - target: 80
         published: 80
@@ -42,7 +42,7 @@ services:
         constraints:
           - node.platform.os==linux
           - node.role==worker
-          - node.labels.loadbalancer==true
+          - node.labels.EdgeLoadBalancer==true
       resources:
         limits:
           cpus: '4'
