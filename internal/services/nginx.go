@@ -76,6 +76,7 @@ func PrepareEdgeLoadBalancerDeployment(ctx context.Context, sshPool *ssh.Pool, p
 		filepath.ToSlash(filepath.Join(confPath, "conf.d")),
 		filepath.ToSlash(filepath.Join(confPath, "sites-enabled")),
 		filepath.ToSlash(filepath.Join(confPath, "stream.d")), // TCP/UDP stream configs
+		filepath.ToSlash(filepath.Join(confPath, "auth")),     // htpasswd files for basic auth
 		filepath.ToSlash(filepath.Join(storagePath, "data", EdgeLoadBalancerDataDir, "ssl")),
 	}
 
@@ -296,6 +297,38 @@ func ReloadNginx(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, s
 	return nil
 }
 
+// createHtpasswdFile creates an htpasswd file for basic authentication
+// credentials format: "user:password"
+func createHtpasswdFile(ctx context.Context, sshPool *ssh.Pool, host string, authPath string, serviceName string, credentials string) error {
+	log := logging.L().With("component", "nginx", "service", serviceName)
+
+	// Parse credentials
+	parts := strings.SplitN(credentials, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid credentials format, expected 'user:password'")
+	}
+	username := parts[0]
+	password := parts[1]
+
+	htpasswdFile := filepath.ToSlash(filepath.Join(authPath, fmt.Sprintf("%s.htpasswd", strings.ToLower(serviceName))))
+
+	// Create htpasswd file using openssl for password hashing (apr1 format)
+	// This is compatible with nginx auth_basic
+	createCmd := fmt.Sprintf(`
+		mkdir -p '%s'
+		HASHED=$(openssl passwd -apr1 '%s')
+		echo '%s:'"$HASHED" > '%s'
+		chmod 644 '%s'
+	`, authPath, password, username, htpasswdFile, htpasswdFile)
+
+	if _, stderr, err := sshPool.Run(ctx, host, createCmd); err != nil {
+		return fmt.Errorf("failed to create htpasswd file: %w (stderr: %s)", err, stderr)
+	}
+
+	log.Infow("created htpasswd file", "file", htpasswdFile, "user", username)
+	return nil
+}
+
 // GenerateProxyRulesForServices generates Nginx proxy configurations for enabled services with NGINX_PROXY: true
 // Services are identified by their Docker Swarm service name pattern: StackName_ServiceName
 // We use variable-based proxy_pass with resolver so Nginx can start even if upstreams haven't started yet.
@@ -320,6 +353,16 @@ func GenerateProxyRulesForServices(ctx context.Context, sshPool *ssh.Pool, prima
 	}
 
 	log.Infow("generating Nginx proxy rules for services", "count", len(proxyServices))
+
+	// Create htpasswd files for services with basic auth
+	authPath := filepath.ToSlash(filepath.Join(storagePath, "data", EdgeLoadBalancerDataDir, EdgeLoadBalancerConfDir, "auth"))
+	for _, svc := range proxyServices {
+		if svc.NginxBasicAuth != "" {
+			if err := createHtpasswdFile(ctx, sshPool, primaryMaster, authPath, svc.Name, svc.NginxBasicAuth); err != nil {
+				log.Warnw("failed to create htpasswd file", "service", svc.Name, "error", err)
+			}
+		}
+	}
 
 	// Write to default.conf - this is the single server block with health check + proxy rules
 	// This replaces the placeholder created by createDefaultServerConfig
@@ -371,10 +414,19 @@ func GenerateProxyRulesForServices(ctx context.Context, sshPool *ssh.Pool, prima
 			"path", proxyPath,
 			"upstream", fmt.Sprintf("%s:%d", dockerServiceName, port),
 			"websocket", svc.NginxWebSocket,
+			"basicAuth", svc.NginxBasicAuth != "",
 		)
 
 		config.WriteString(fmt.Sprintf("    # %s\n", svc.Name))
 		config.WriteString(fmt.Sprintf("    location %s {\n", proxyPath))
+
+		// Add basic auth if configured
+		if svc.NginxBasicAuth != "" {
+			htpasswdPath := filepath.ToSlash(filepath.Join("/etc/nginx/auth", fmt.Sprintf("%s.htpasswd", strings.ToLower(svc.Name))))
+			config.WriteString(fmt.Sprintf("        auth_basic \"%s\";\n", svc.Name))
+			config.WriteString(fmt.Sprintf("        auth_basic_user_file %s;\n", htpasswdPath))
+		}
+
 		// Use variable-based proxy_pass so resolver is used at request time, not startup
 		config.WriteString(fmt.Sprintf("        set $%s_backend \"%s:%d\";\n", varName, dockerServiceName, port))
 		config.WriteString(fmt.Sprintf("        proxy_pass http://$%s_backend;\n", varName))

@@ -2,15 +2,16 @@
 # DESCRIPTION: VS Code Server - Browser-based IDE for editing Nginx configs and other files
 # ENABLED: true
 # NGINX_PROXY: true
-# NGINX_PATH: /vscode
+# NGINX_PATH: /vscodeserver
 # NGINX_PORT: 8443
 # NGINX_WEBSOCKET: true
+# NGINX_BASIC_AUTH: admin:admin
 # NOTE: Mounts Nginx config paths read-write for editing configs via browser
 
 services:
   VSCodeServer:
     image: lscr.io/linuxserver/code-server:latest
-    hostname: 'vscode-{{.Node.ID}}'
+    hostname: 'vscodeserver-{{.Node.ID}}'
     environment:
       TZ: UTC
       PUID: 0
@@ -21,8 +22,7 @@ services:
     volumes:
       # VSCode Server persistent config
       - /mnt/MicroCephFS/docker-swarm-0001/data/VSCodeServer/config:/config:rw
-      - /mnt/MicroCephFS/docker-swarm-0001/data/Nginx:/workspace/Nginx:rw
-      - /mnt/MicroCephFS/docker-swarm-0001/ServiceDefinitions:/workspace/ServiceDefinitions:rw
+      - /mnt/MicroCephFS/docker-swarm-0001:/mnt/MicroCephFS/docker-swarm-0001:rw
     networks:
       - INTERNAL
     deploy:

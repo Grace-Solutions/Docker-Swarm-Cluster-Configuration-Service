@@ -9,7 +9,7 @@
 services:
   EdgeLoadBalancer:
     image: nginx:alpine
-    hostname: 'EdgeLoadBalancer-{{.Node.ID}}'
+    hostname: 'edgeloadbalancer-{{.Node.ID}}'
     ports:
       - target: 80
         published: 80
@@ -26,6 +26,7 @@ services:
       - /mnt/MicroCephFS/docker-swarm-0001/data/EdgeLoadBalancer/conf/sites-enabled:/etc/nginx/sites-enabled:ro
       - /mnt/MicroCephFS/docker-swarm-0001/data/EdgeLoadBalancer/conf/stream.d:/etc/nginx/stream.d:ro
       - /mnt/MicroCephFS/docker-swarm-0001/data/EdgeLoadBalancer/conf/mime.types:/etc/nginx/mime.types:ro
+      - /mnt/MicroCephFS/docker-swarm-0001/data/EdgeLoadBalancer/conf/auth:/etc/nginx/auth:ro
       - /mnt/MicroCephFS/docker-swarm-0001/data/EdgeLoadBalancer/ssl:/etc/nginx/ssl:ro
       # ACME challenge directory (Certmate writes, Nginx serves)
       - /mnt/MicroCephFS/docker-swarm-0001/data/EdgeLoadBalancer/acme-challenge:/etc/nginx/acme-challenge:ro

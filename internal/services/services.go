@@ -30,6 +30,7 @@ type ServiceMetadata struct {
 	NginxPort      int    // NGINX_PORT: 8080 - internal port the service listens on
 	NginxWebSocket bool   // NGINX_WEBSOCKET: true/false - enable WebSocket support
 	NginxTCPStream string // NGINX_TCP_STREAM: backend_port:nginx_port - TCP stream proxy (e.g., 8000:9001)
+	NginxBasicAuth string // NGINX_BASIC_AUTH: user:pass - enable basic auth with these credentials
 }
 
 // DeploymentMetrics tracks deployment statistics
@@ -172,6 +173,8 @@ func parseServiceMetadata(filePath, fileName string) (ServiceMetadata, error) {
 			metadata.NginxWebSocket = strings.ToLower(wsStr) == "true"
 		} else if strings.HasPrefix(line, "NGINX_TCP_STREAM:") {
 			metadata.NginxTCPStream = strings.TrimSpace(strings.TrimPrefix(line, "NGINX_TCP_STREAM:"))
+		} else if strings.HasPrefix(line, "NGINX_BASIC_AUTH:") {
+			metadata.NginxBasicAuth = strings.TrimSpace(strings.TrimPrefix(line, "NGINX_BASIC_AUTH:"))
 		}
 	}
 
