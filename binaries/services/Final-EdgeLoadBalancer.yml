@@ -42,6 +42,7 @@ services:
       placement:
         constraints:
           - node.platform.os==linux
+          - node.role==worker
           - node.labels.EdgeLoadBalancer==true
       resources:
         limits:

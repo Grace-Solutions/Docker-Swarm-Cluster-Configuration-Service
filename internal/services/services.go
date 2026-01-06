@@ -520,9 +520,33 @@ type BindMountPaths struct {
 	LocalPaths []string
 }
 
+// isFilePath determines if a path likely refers to a file (vs directory).
+// Uses heuristic: path has an extension (e.g., .conf, .key, .crt, .htpasswd)
+func isFilePath(path string) bool {
+	base := filepath.Base(path)
+	// Check if the basename has a dot followed by an extension
+	// Exclude hidden files/dirs that start with a dot
+	if strings.HasPrefix(base, ".") {
+		return false
+	}
+	ext := filepath.Ext(base)
+	return ext != ""
+}
+
+// getDirectoryForPath returns the directory to create for a given path.
+// For file paths, returns the parent directory.
+// For directory paths, returns the path itself.
+func getDirectoryForPath(path string) string {
+	if isFilePath(path) {
+		return filepath.Dir(path)
+	}
+	return path
+}
+
 // parseBindMounts extracts host paths from bind mount volume definitions in YAML content.
 // It parses both short form ("host:container") and long form (source:/path, target:/path) volumes.
 // Returns categorized paths: storage paths (under storageMountPath) and local paths (absolute paths elsewhere).
+// For file mounts (paths with extensions like .conf), returns the PARENT directory.
 func parseBindMounts(content string, storageMountPath string) BindMountPaths {
 	var result BindMountPaths
 	seenPaths := make(map[string]bool)
@@ -550,18 +574,24 @@ func parseBindMounts(content string, storageMountPath string) BindMountPaths {
 			continue
 		}
 
-		// Normalize path and avoid duplicates
+		// Normalize path
 		hostPath = strings.TrimSuffix(hostPath, "/")
-		if seenPaths[hostPath] {
+
+		// For file mounts (paths with extensions), get parent directory
+		// This prevents mkdir -p from creating a directory with the file's name
+		dirPath := getDirectoryForPath(hostPath)
+
+		// Avoid duplicates
+		if seenPaths[dirPath] {
 			continue
 		}
-		seenPaths[hostPath] = true
+		seenPaths[dirPath] = true
 
 		// Categorize: storage path vs local path
-		if storageMountPath != "" && strings.HasPrefix(hostPath, storageMountPath) {
-			result.StoragePaths = append(result.StoragePaths, hostPath)
+		if storageMountPath != "" && strings.HasPrefix(dirPath, storageMountPath) {
+			result.StoragePaths = append(result.StoragePaths, dirPath)
 		} else {
-			result.LocalPaths = append(result.LocalPaths, hostPath)
+			result.LocalPaths = append(result.LocalPaths, dirPath)
 		}
 	}
 
