@@ -75,9 +75,10 @@ func PrepareEdgeLoadBalancerDeployment(ctx context.Context, sshPool *ssh.Pool, p
 		confPath,
 		filepath.ToSlash(filepath.Join(confPath, "conf.d")),
 		filepath.ToSlash(filepath.Join(confPath, "sites-enabled")),
-		filepath.ToSlash(filepath.Join(confPath, "stream.d")), // TCP/UDP stream configs
-		filepath.ToSlash(filepath.Join(confPath, "auth")),     // htpasswd files for basic auth
+		filepath.ToSlash(filepath.Join(confPath, "stream.d")),      // TCP/UDP stream configs
+		filepath.ToSlash(filepath.Join(confPath, "auth")),          // htpasswd files for basic auth
 		filepath.ToSlash(filepath.Join(storagePath, "data", EdgeLoadBalancerDataDir, "ssl")),
+		filepath.ToSlash(filepath.Join(storagePath, "data", EdgeLoadBalancerDataDir, "acme-challenge")), // ACME challenge for Let's Encrypt
 	}
 
 	for _, dir := range dirs {
