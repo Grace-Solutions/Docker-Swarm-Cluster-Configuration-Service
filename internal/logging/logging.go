@@ -51,7 +51,8 @@ func Init() error {
 
 	var f *os.File
 	if logPath != "" {
-		file, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		// Clear log on each run (O_TRUNC), then write fresh
+		file, err := os.OpenFile(logPath, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
 			// We can't rely on the logger yet, so emit a best-effort warning
 			// directly to stderr and continue with stderr-only logging.

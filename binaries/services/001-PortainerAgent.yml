@@ -8,7 +8,6 @@ services:
     image: portainer/agent:latest
     hostname: 'portainer-agent-{{.Node.ID}}'
     environment:
-      AGENT_CLUSTER_ADDR: tasks.PortainerAgent
       LOG_LEVEL: INFO
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:rw

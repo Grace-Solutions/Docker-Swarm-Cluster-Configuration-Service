@@ -451,6 +451,11 @@ func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string,
 	// Local paths: always create on all nodes (node-local directories like /var/lib/nginx)
 	if len(clusterInfo.AllNodes) > 0 {
 		bindMounts := parseBindMounts(processedContent, storageMountPath)
+		log.Infow("parsed bind mounts from YAML",
+			"storagePaths", bindMounts.StoragePaths,
+			"localPaths", bindMounts.LocalPaths,
+			"storageMountPath", storageMountPath,
+		)
 
 		// Handle storage paths (under storageMountPath)
 		if len(bindMounts.StoragePaths) > 0 {
@@ -559,29 +564,38 @@ func injectPortainerAdminPassword(content string, password string) (string, erro
 	}
 	bcryptHash := string(hash)
 
-	// Find the command: line and append --admin-password
-	// Pattern matches: command: <existing args>
-	// We need to append --admin-password '$2a$...' to the command
-	commandPattern := regexp.MustCompile(`(?m)^(\s*command:\s*)(.*)$`)
+	// Find the command: line and convert to array format to avoid YAML quoting issues
+	// bcrypt hashes contain $ which cause problems with YAML string interpolation
+	// Pattern matches: command: <existing args> (single-line format)
+	commandPattern := regexp.MustCompile(`(?m)^(\s*)command:\s*(.+)$`)
 
 	if !commandPattern.MatchString(content) {
 		return content, fmt.Errorf("no command: line found in Portainer YAML")
 	}
 
-	// Replace command line, appending the --admin-password flag
-	// Escape any $ in the hash for YAML (use single quotes to prevent shell expansion)
+	// Replace command line with array format for safe handling of special chars
 	modified := commandPattern.ReplaceAllStringFunc(content, func(match string) string {
 		submatches := commandPattern.FindStringSubmatch(match)
 		if len(submatches) < 3 {
 			return match
 		}
-		prefix := submatches[1]   // "    command: "
-		existing := submatches[2] // existing command args
+		indent := submatches[1] // leading whitespace
+		existing := strings.TrimSpace(submatches[2])
 
-		// Append --admin-password with the bcrypt hash
-		// Use single quotes around hash to prevent shell expansion of $
-		newCommand := fmt.Sprintf("%s%s --admin-password '%s'", prefix, existing, bcryptHash)
-		return newCommand
+		// Parse existing args (simple space-split, handles most cases)
+		// For Portainer: "-H tcp://${DOCKER_MANAGER_HOST}:2375 --tlsskipverify"
+		args := strings.Fields(existing)
+		args = append(args, "--admin-password", bcryptHash)
+
+		// Build array-format command (avoids all YAML quoting issues)
+		var lines []string
+		lines = append(lines, indent+"command:")
+		for _, arg := range args {
+			// Each arg as a separate array element - YAML handles quoting automatically
+			lines = append(lines, fmt.Sprintf("%s  - %q", indent, arg))
+		}
+
+		return strings.Join(lines, "\n")
 	})
 
 	log.Infow("injected Portainer admin password", "hashPrefix", bcryptHash[:20]+"...")
@@ -612,25 +626,68 @@ type BindMountPaths struct {
 	LocalPaths []string
 }
 
+// knownFileExtensions is a set of extensions that indicate a file (not a directory).
+// This prevents false positives like "conf.d" or "stream.d" being treated as files.
+var knownFileExtensions = map[string]bool{
+	".conf":     true,
+	".cfg":      true,
+	".config":   true,
+	".yml":      true,
+	".yaml":     true,
+	".json":     true,
+	".xml":      true,
+	".toml":     true,
+	".ini":      true,
+	".properties": true,
+	".env":      true,
+	".key":      true,
+	".crt":      true,
+	".pem":      true,
+	".cer":      true,
+	".p12":      true,
+	".pfx":      true,
+	".htpasswd": true,
+	".htaccess": true,
+	".log":      true,
+	".txt":      true,
+	".md":       true,
+	".sh":       true,
+	".bash":     true,
+	".sql":      true,
+	".db":       true,
+	".sqlite":   true,
+	".gz":       true,
+	".tar":      true,
+	".zip":      true,
+	".sock":     true,
+	".pid":      true,
+	".lock":     true,
+	".types":    true, // mime.types
+}
+
 // isFilePath determines if a path likely refers to a file (vs directory).
-// Uses heuristic: path has an extension (e.g., .conf, .key, .crt, .htpasswd)
+// Uses a whitelist of known file extensions to avoid false positives like "conf.d".
 func isFilePath(path string) bool {
 	base := filepath.Base(path)
-	// Check if the basename has a dot followed by an extension
-	// Exclude hidden files/dirs that start with a dot
+	// Exclude hidden files/dirs that start with a dot (e.g., .htpasswd as a directory)
 	if strings.HasPrefix(base, ".") {
 		return false
 	}
-	ext := filepath.Ext(base)
-	return ext != ""
+	ext := strings.ToLower(filepath.Ext(base))
+	return knownFileExtensions[ext]
 }
 
 // getDirectoryForPath returns the directory to create for a given path.
 // For file paths, returns the parent directory.
 // For directory paths, returns the path itself.
+// Always uses forward slashes for Linux paths (even when running on Windows).
 func getDirectoryForPath(path string) string {
 	if isFilePath(path) {
-		return filepath.Dir(path)
+		// Use path.Dir instead of filepath.Dir to preserve forward slashes
+		// filepath.Dir converts to OS-native separators which breaks Linux paths on Windows
+		dir := filepath.Dir(path)
+		// Convert back to forward slashes for Linux paths
+		return filepath.ToSlash(dir)
 	}
 	return path
 }
