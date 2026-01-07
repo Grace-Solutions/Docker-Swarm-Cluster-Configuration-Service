@@ -453,12 +453,12 @@ func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string,
 	// Storage paths: create on one node if distributed storage, else all nodes
 	// Local paths: always create on all nodes (node-local directories like /var/lib/nginx)
 	if len(clusterInfo.AllNodes) > 0 {
-		// Debug: show a sample of the content being parsed
+		// Debug: show a sample of the content being parsed (INFO level for diagnosis)
 		contentPreview := processedContent
-		if len(contentPreview) > 500 {
-			contentPreview = contentPreview[:500] + "..."
+		if len(contentPreview) > 800 {
+			contentPreview = contentPreview[:800] + "..."
 		}
-		log.Debugw("parsing bind mounts from content", "preview", contentPreview)
+		log.Infow("🔍 parsing bind mounts from YAML content", "contentLength", len(processedContent), "preview", contentPreview)
 
 		bindMounts := parseBindMounts(processedContent, storageMountPath)
 
@@ -590,7 +590,9 @@ func injectPortainerAdminPassword(content string, password string) (string, erro
 	if err != nil {
 		return content, fmt.Errorf("failed to bcrypt password: %w", err)
 	}
-	bcryptHash := string(hash)
+	// Escape $ as $$ for Docker Compose interpolation
+	// Docker Compose interprets $ as variable substitution, so $2a becomes invalid interpolation
+	bcryptHash := strings.ReplaceAll(string(hash), "$", "$$")
 
 	// Find the command: line and convert to array format to avoid YAML quoting issues
 	// bcrypt hashes contain $ which cause problems with YAML string interpolation
@@ -748,12 +750,12 @@ func parseBindMounts(content string, storageMountPath string) BindMountPaths {
 		// Try short form first
 		if matches := shortFormPattern.FindStringSubmatch(line); len(matches) >= 2 {
 			hostPath = matches[1]
-			log.Debugw("short form match", "line", strings.TrimSpace(line), "hostPath", hostPath)
+			log.Infow("  📎 volume match", "line", strings.TrimSpace(line), "hostPath", hostPath)
 			matchCount++
 		} else if matches := longFormPattern.FindStringSubmatch(line); len(matches) >= 2 {
 			// Try long form
 			hostPath = matches[1]
-			log.Debugw("long form match", "line", strings.TrimSpace(line), "hostPath", hostPath)
+			log.Infow("  📎 volume match (long form)", "line", strings.TrimSpace(line), "hostPath", hostPath)
 			matchCount++
 		}
 
@@ -783,7 +785,7 @@ func parseBindMounts(content string, storageMountPath string) BindMountPaths {
 		}
 	}
 
-	log.Debugw("parseBindMounts complete",
+	log.Infow("🔍 parseBindMounts complete",
 		"linesScanned", len(lines),
 		"matchesFound", matchCount,
 		"storagePaths", len(result.StoragePaths),
