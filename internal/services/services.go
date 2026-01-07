@@ -453,12 +453,6 @@ func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string,
 	// Storage paths: create on one node if distributed storage, else all nodes
 	// Local paths: always create on all nodes (node-local directories like /var/lib/nginx)
 	if len(clusterInfo.AllNodes) > 0 {
-		// Debug: show a sample of the content being parsed (INFO level for diagnosis)
-		contentPreview := processedContent
-		if len(contentPreview) > 800 {
-			contentPreview = contentPreview[:800] + "..."
-		}
-		log.Infow("🔍 parsing bind mounts from YAML content", "contentLength", len(processedContent), "preview", contentPreview)
 
 		bindMounts := parseBindMounts(processedContent, storageMountPath)
 
@@ -742,7 +736,13 @@ func parseBindMounts(content string, storageMountPath string) BindMountPaths {
 	// Pattern for long form source: /host/path
 	longFormPattern := regexp.MustCompile(`^\s*source:\s*([^\s]+)`)
 
-	lines := strings.Split(content, "\n")
+	// Normalize line endings (CRLF -> LF) before splitting
+	// Windows files have \r\n which leaves \r at end of lines after splitting on \n
+	// This breaks the regex $ anchor
+	normalizedContent := strings.ReplaceAll(content, "\r\n", "\n")
+	normalizedContent = strings.ReplaceAll(normalizedContent, "\r", "\n")
+
+	lines := strings.Split(normalizedContent, "\n")
 	matchCount := 0
 	for _, line := range lines {
 		var hostPath string
@@ -750,12 +750,12 @@ func parseBindMounts(content string, storageMountPath string) BindMountPaths {
 		// Try short form first
 		if matches := shortFormPattern.FindStringSubmatch(line); len(matches) >= 2 {
 			hostPath = matches[1]
-			log.Infow("  📎 volume match", "line", strings.TrimSpace(line), "hostPath", hostPath)
+			log.Debugw("  📎 volume match", "line", strings.TrimSpace(line), "hostPath", hostPath)
 			matchCount++
 		} else if matches := longFormPattern.FindStringSubmatch(line); len(matches) >= 2 {
 			// Try long form
 			hostPath = matches[1]
-			log.Infow("  📎 volume match (long form)", "line", strings.TrimSpace(line), "hostPath", hostPath)
+			log.Debugw("  📎 volume match (long form)", "line", strings.TrimSpace(line), "hostPath", hostPath)
 			matchCount++
 		}
 
@@ -785,7 +785,7 @@ func parseBindMounts(content string, storageMountPath string) BindMountPaths {
 		}
 	}
 
-	log.Infow("🔍 parseBindMounts complete",
+	log.Debugw("parseBindMounts complete",
 		"linesScanned", len(lines),
 		"matchesFound", matchCount,
 		"storagePaths", len(result.StoragePaths),

@@ -74,6 +74,9 @@ services:
       start_period: 10s
 
 networks:
+  EXTERNAL:
+    name: DOCKER-SWARM-SERVICES-EXTERNAL
+    external: true
   INTERNAL:
     name: DOCKER-SWARM-SERVICES-INTERNAL
     external: true
