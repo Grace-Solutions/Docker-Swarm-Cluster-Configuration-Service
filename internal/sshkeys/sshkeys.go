@@ -22,7 +22,7 @@ const (
 	// DefaultKeyDir is the default directory for SSH keys (relative to binary)
 	DefaultKeyDir = "sshkeys"
 	// PrivateKeyFileName is the name of the private key file
-	PrivateKeyFileName = "PrivateKey.ppk"
+	PrivateKeyFileName = "PrivateKey.privkey"
 	// PublicKeyFileName is the name of the public key file
 	// Uses .pubkey extension to avoid conflict with MS Publisher (.pub)
 	PublicKeyFileName = "PublicKey.pubkey"
