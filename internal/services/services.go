@@ -453,6 +453,13 @@ func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string,
 	// Storage paths: create on one node if distributed storage, else all nodes
 	// Local paths: always create on all nodes (node-local directories like /var/lib/nginx)
 	if len(clusterInfo.AllNodes) > 0 {
+		// Debug: show a sample of the content being parsed
+		contentPreview := processedContent
+		if len(contentPreview) > 500 {
+			contentPreview = contentPreview[:500] + "..."
+		}
+		log.Debugw("parsing bind mounts from content", "preview", contentPreview)
+
 		bindMounts := parseBindMounts(processedContent, storageMountPath)
 
 		totalDirs := len(bindMounts.StoragePaths) + len(bindMounts.LocalPaths)
@@ -723,6 +730,7 @@ func getDirectoryForPath(path string) string {
 // Returns categorized paths: storage paths (under storageMountPath) and local paths (absolute paths elsewhere).
 // For file mounts (paths with extensions like .conf), returns the PARENT directory.
 func parseBindMounts(content string, storageMountPath string) BindMountPaths {
+	log := logging.L().With("component", "services")
 	var result BindMountPaths
 	seenPaths := make(map[string]bool)
 
@@ -733,15 +741,20 @@ func parseBindMounts(content string, storageMountPath string) BindMountPaths {
 	longFormPattern := regexp.MustCompile(`^\s*source:\s*([^\s]+)`)
 
 	lines := strings.Split(content, "\n")
+	matchCount := 0
 	for _, line := range lines {
 		var hostPath string
 
 		// Try short form first
 		if matches := shortFormPattern.FindStringSubmatch(line); len(matches) >= 2 {
 			hostPath = matches[1]
+			log.Debugw("short form match", "line", strings.TrimSpace(line), "hostPath", hostPath)
+			matchCount++
 		} else if matches := longFormPattern.FindStringSubmatch(line); len(matches) >= 2 {
 			// Try long form
 			hostPath = matches[1]
+			log.Debugw("long form match", "line", strings.TrimSpace(line), "hostPath", hostPath)
+			matchCount++
 		}
 
 		// Skip empty, relative paths, or named volumes
@@ -769,6 +782,13 @@ func parseBindMounts(content string, storageMountPath string) BindMountPaths {
 			result.LocalPaths = append(result.LocalPaths, dirPath)
 		}
 	}
+
+	log.Debugw("parseBindMounts complete",
+		"linesScanned", len(lines),
+		"matchesFound", matchCount,
+		"storagePaths", len(result.StoragePaths),
+		"localPaths", len(result.LocalPaths),
+	)
 
 	return result
 }

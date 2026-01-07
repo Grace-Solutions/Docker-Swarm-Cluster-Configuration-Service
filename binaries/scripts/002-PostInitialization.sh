@@ -28,7 +28,7 @@ IFS=',' read -ra SERVICES <<< "${DEPLOYED_SERVICES}"
 echo "[PostInit] Checking ${#SERVICES[@]} deployed service(s)..."
 
 # Wait for services to stabilize
-STABILIZATION_DELAY=10
+STABILIZATION_DELAY=15
 echo "[PostInit] Waiting ${STABILIZATION_DELAY}s for services to stabilize..."
 sleep ${STABILIZATION_DELAY}
 
@@ -48,8 +48,13 @@ for STACK_NAME in "${SERVICES[@]}"; do
     
     for SVC_NAME in ${SERVICE_NAMES}; do
         echo ""
-        echo "[PostInit] → Logs for ${SVC_NAME} (last 10 lines):"
-        docker service logs --tail 10 "${SVC_NAME}" 2>&1 || echo "[PostInit]   (no logs available yet)"
+        echo "[PostInit] → Logs for ${SVC_NAME} (last 10 lines):"  
+        docker service logs --tail 10 "${SVC_NAME}" 2>&1 || echo "[PostInit] (no logs available yet)"
+        echo ""
+        echo ""
+        docker service ps "${SVC_NAME}" --no-trunc 2>&1 || echo "[PostInit] (no service deployment issues detected)"
+        echo ""
+        echo ""
     done
 done
 
