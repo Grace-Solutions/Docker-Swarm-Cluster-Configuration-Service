@@ -36,6 +36,9 @@ type ServiceMetadata struct {
 	NginxStripPrefix bool   // NGINX_STRIP_PREFIX: true/false - strip location prefix before proxying (default: true)
 	// Portainer-specific configuration
 	PortainerAdminPassword string // PORTAINER_ADMIN_PASSWORD: password - sets initial admin password (bcrypted at runtime)
+	// ProcessedContent holds the post-processed YAML content after variable replacement
+	// This is set during deployment and used for uploading to storage
+	ProcessedContent string
 }
 
 // DeploymentMetrics tracks deployment statistics
@@ -316,7 +319,7 @@ func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string
 			"file", svc.FileName,
 		)
 
-		if err := deployService(ctx, sshPool, primaryMaster, svc, storageMountPath, clusterInfo); err != nil {
+		if err := deployService(ctx, sshPool, primaryMaster, &services[i], storageMountPath, clusterInfo); err != nil {
 			log.Errorw(fmt.Sprintf("failed to deploy service %d/%d", i+1, metrics.TotalFound),
 				"name", svc.Name,
 				"error", err,
@@ -392,7 +395,7 @@ func DeployServices(ctx context.Context, sshPool *ssh.Pool, primaryMaster string
 }
 
 // deployService deploys a single service to the Docker Swarm cluster
-func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, svc ServiceMetadata, storageMountPath string, clusterInfo ClusterInfo) error {
+func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string, svc *ServiceMetadata, storageMountPath string, clusterInfo ClusterInfo) error {
 	log := logging.L().With("component", "services", "service", svc.Name)
 
 	// Read service file
@@ -525,6 +528,9 @@ func deployService(ctx context.Context, sshPool *ssh.Pool, primaryMaster string,
 
 	log.Infow("✅ stack deployed", "stack", svc.Name, "stdout", strings.TrimSpace(stdout))
 
+	// Store the processed content for later use (e.g., uploading to storage)
+	svc.ProcessedContent = processedContent
+
 	// Clean up temporary file
 	cleanupCmd := fmt.Sprintf("rm -f %s", remoteFile)
 	if _, _, err := sshPool.Run(ctx, primaryMaster, cleanupCmd); err != nil {
@@ -621,7 +627,12 @@ func injectPortainerAdminPassword(content string, password string) (string, erro
 // It dynamically matches any /mnt/<storage-type>/<cluster-name> pattern and replaces with storageMountPath.
 // Preserves any subdirectories after the base mount path.
 func replaceStoragePaths(content string, storageMountPath string) string {
-	// Dynamic pattern: /mnt/<any-storage-type>/<any-cluster-name>
+	result := content
+
+	// 1. Replace ${STORAGE_MOUNT_PATH} variable (preferred syntax)
+	result = strings.ReplaceAll(result, "${STORAGE_MOUNT_PATH}", storageMountPath)
+
+	// 2. Also support legacy dynamic pattern: /mnt/<any-storage-type>/<any-cluster-name>
 	// Matches: /mnt/GlusterFS/docker-swarm-0001, /mnt/cephfs/my-cluster, /mnt/nfs/prod, etc.
 	// The pattern matches /mnt/ followed by a storage type name and cluster/volume name
 	// Storage type: alphanumeric with optional hyphens/underscores (e.g., GlusterFS, MicroCephFS, cephfs, nfs)
@@ -630,7 +641,7 @@ func replaceStoragePaths(content string, storageMountPath string) string {
 	pattern := `/mnt/[A-Za-z0-9_-]+/[A-Za-z0-9._-]+`
 
 	re := regexp.MustCompile(pattern)
-	return re.ReplaceAllString(content, storageMountPath)
+	return re.ReplaceAllString(result, storageMountPath)
 }
 
 // BindMountPaths contains categorized bind mount paths from service definitions.
@@ -896,19 +907,28 @@ func uploadServiceDefinitions(ctx context.Context, sshPool *ssh.Pool, services [
 
 		// Upload each enabled service file to this node
 		for _, svc := range enabledServices {
-			// Read the local file content
-			content, err := os.ReadFile(svc.FilePath)
-			if err != nil {
-				log.Warnw("failed to read service file", "file", svc.FilePath, "error", err)
-				errors = append(errors, fmt.Sprintf("%s/%s: %v", node, svc.Name, err))
-				continue
+			// Use processed content if available (post-deployment), otherwise read raw file
+			var content string
+			if svc.ProcessedContent != "" {
+				content = svc.ProcessedContent
+				log.Infow("using processed content for upload", "service", svc.Name, "size", len(content))
+			} else {
+				// Fallback: read raw file content (service was not deployed in this run)
+				rawContent, err := os.ReadFile(svc.FilePath)
+				if err != nil {
+					log.Warnw("failed to read service file", "file", svc.FilePath, "error", err)
+					errors = append(errors, fmt.Sprintf("%s/%s: %v", node, svc.Name, err))
+					continue
+				}
+				content = string(rawContent)
+				log.Infow("using raw file content for upload (no processed content)", "service", svc.Name, "size", len(content))
 			}
 
 			// Build remote file path
 			remoteFile := fmt.Sprintf("%s/%s", destDir, svc.FileName)
 
 			// Write content to remote file using heredoc
-			writeCmd := fmt.Sprintf("cat > '%s' << 'DSCOTCTL_EOF'\n%s\nDSCOTCTL_EOF", remoteFile, string(content))
+			writeCmd := fmt.Sprintf("cat > '%s' << 'DSCOTCTL_EOF'\n%s\nDSCOTCTL_EOF", remoteFile, content)
 
 			log.Infow("uploading service definition",
 				"service", svc.Name,

@@ -70,7 +70,9 @@ func TestParseBindMountsFromRealYAMLs(t *testing.T) {
 				t.Fatalf("Failed to read file: %v", err)
 			}
 
-			result := parseBindMounts(string(content), storageMountPath)
+			// Apply variable replacement first (simulates deployment processing)
+			processedContent := replaceStoragePaths(string(content), storageMountPath)
+			result := parseBindMounts(processedContent, storageMountPath)
 
 			t.Logf("File: %s", file.Name())
 			t.Logf("  Storage paths: %d", len(result.StoragePaths))

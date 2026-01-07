@@ -20,7 +20,8 @@ services:
       DOCKER_MANAGER_HOST: ${DOCKER_MANAGER_HOST}
       LOG_LEVEL: INFO
     volumes:
-      - /mnt/MicroCephFS/docker-swarm-0001/data/Portainer:/data:rw
+      # ${STORAGE_MOUNT_PATH} is replaced at deployment with the actual mount path from config
+      - ${STORAGE_MOUNT_PATH}/data/Portainer:/data:rw
     networks:
       - EXTERNAL
       - INTERNAL

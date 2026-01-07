@@ -20,9 +20,11 @@ services:
       # Default: no password (configure via reverse proxy auth)
       DEFAULT_WORKSPACE: /config/workspace
     volumes:
+      # ${STORAGE_MOUNT_PATH} is replaced at deployment with the actual mount path from config
       # VSCode Server persistent config
-      - /mnt/MicroCephFS/docker-swarm-0001/data/VSCodeServer/config:/config:rw
-      - /mnt/MicroCephFS/docker-swarm-0001:/mnt/MicroCephFS/docker-swarm-0001:rw
+      - ${STORAGE_MOUNT_PATH}/data/VSCodeServer/config:/config:rw
+      # Mount entire storage for browsing/editing all service data
+      - ${STORAGE_MOUNT_PATH}:${STORAGE_MOUNT_PATH}:rw
     networks:
       - EXTERNAL
       - INTERNAL

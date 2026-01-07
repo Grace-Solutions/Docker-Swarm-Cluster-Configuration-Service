@@ -26,12 +26,13 @@ services:
       # AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       # AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
     volumes:
+      # ${STORAGE_MOUNT_PATH} is replaced at deployment with the actual mount path from config
       # Certificates written directly to Nginx ssl directory (Nginx reads these)
-      - /mnt/MicroCephFS/docker-swarm-0001/data/EdgeLoadBalancer/ssl:/app/certificates:rw
+      - ${STORAGE_MOUNT_PATH}/data/EdgeLoadBalancer/ssl:/app/certificates:rw
       # Certmate application data (settings, accounts)
-      - /mnt/MicroCephFS/docker-swarm-0001/data/Certmate/data:/app/data:rw
-      - /mnt/MicroCephFS/docker-swarm-0001/data/Certmate/logs:/app/logs:rw
-      - /mnt/MicroCephFS/docker-swarm-0001/data/Certmate/backups:/app/backups:rw
+      - ${STORAGE_MOUNT_PATH}/data/Certmate/data:/app/data:rw
+      - ${STORAGE_MOUNT_PATH}/data/Certmate/logs:/app/logs:rw
+      - ${STORAGE_MOUNT_PATH}/data/Certmate/backups:/app/backups:rw
     networks:
       - EXTERNAL
       - INTERNAL
